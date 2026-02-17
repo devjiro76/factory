@@ -59,20 +59,20 @@ phases:
     integrationBranch: integrate/core
     integrationPR: null
   emotion-viz:
-    status: in_progress
+    status: completed
     tasks:
       viz-emotion-map:
-        status: dispatched
+        status: completed
         issue: 11
         pr: null
         branch: factory/viz-emotion-map
       viz-emotion-display:
-        status: dispatched
+        status: completed
         issue: 12
         pr: null
         branch: factory/viz-emotion-display
       viz-integration:
-        status: dispatched
+        status: completed
         issue: 13
         pr: null
         branch: factory/viz-integration
