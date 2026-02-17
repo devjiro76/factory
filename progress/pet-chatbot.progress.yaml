@@ -8,21 +8,21 @@ createdAt: "2026-02-17T00:00:00Z"
 
 phases:
   scaffold:
-    status: pending
+    status: in_progress
     tasks:
       scaffold-vite:
-        status: pending
-        issue: null
+        status: dispatched
+        issue: 1
         pr: null
         branch: factory/scaffold-vite
       scaffold-tailwind:
-        status: pending
-        issue: null
+        status: dispatched
+        issue: 2
         pr: null
         branch: factory/scaffold-tailwind
       scaffold-tooling:
-        status: pending
-        issue: null
+        status: dispatched
+        issue: 3
         pr: null
         branch: factory/scaffold-tooling
     integrationBranch: integrate/scaffold
