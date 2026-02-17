@@ -29,79 +29,79 @@ phases:
     integrationPR: 4
 
   core:
-    status: pending
+    status: in_progress
     tasks:
       ui-chat-panel:
-        status: pending
-        issue: null
-        pr: null
+        status: completed
+        issue: 5
+        pr: 17
         branch: factory/ui-chat-panel
       ui-layout:
-        status: pending
-        issue: null
-        pr: null
+        status: completed
+        issue: 6
+        pr: 14
         branch: factory/ui-layout
       ui-pet-avatar:
-        status: pending
-        issue: null
-        pr: null
+        status: completed
+        issue: 7
+        pr: 16
         branch: factory/ui-pet-avatar
       sdk-client:
-        status: pending
-        issue: null
-        pr: null
+        status: completed
+        issue: 8
+        pr: 13
         branch: factory/sdk-client
       sdk-chat-hook:
-        status: pending
-        issue: null
-        pr: null
+        status: completed
+        issue: 9
+        pr: 15
         branch: factory/sdk-chat-hook
       sdk-world-setup:
-        status: pending
-        issue: null
+        status: dispatched
+        issue: 17
         pr: null
         branch: factory/sdk-world-setup
     integrationBranch: integrate/core
-    integrationPR: null
+    integrationPR: 21
 
   emotion-viz:
-    status: pending
+    status: in_progress
     tasks:
       viz-emotion-map:
-        status: pending
-        issue: null
-        pr: null
+        status: completed
+        issue: 11
+        pr: 19
         branch: factory/viz-emotion-map
       viz-emotion-display:
-        status: pending
-        issue: null
-        pr: null
+        status: completed
+        issue: 12
+        pr: 18
         branch: factory/viz-emotion-display
       viz-integration:
-        status: pending
-        issue: null
+        status: dispatched
+        issue: 18
         pr: null
         branch: factory/viz-integration
     integrationBranch: integrate/emotion-viz
-    integrationPR: null
+    integrationPR: 22
 
   polish:
-    status: pending
+    status: in_progress
     tasks:
       polish-error:
-        status: pending
-        issue: null
+        status: dispatched
+        issue: 19
         pr: null
         branch: factory/polish-error
       polish-responsive:
-        status: pending
-        issue: null
+        status: dispatched
+        issue: 20
         pr: null
         branch: factory/polish-responsive
       polish-deploy:
-        status: pending
-        issue: null
-        pr: null
+        status: completed
+        issue: 16
+        pr: 20
         branch: factory/polish-deploy
     integrationBranch: integrate/polish
-    integrationPR: null
+    integrationPR: 23
