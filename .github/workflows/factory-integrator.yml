@@ -22,11 +22,18 @@ permissions:
   issues: write
   actions: write
 
+concurrency:
+  group: factory-integrator
+  cancel-in-progress: false
+
 jobs:
   integrate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.FACTORY_GH_PAT }}
 
       - uses: actions/setup-node@v4
         with:
@@ -89,12 +96,97 @@ jobs:
           6. Push integration branch to target repo
           7. Create integration PR in target repo
 
-          Then update progress in the FACTORY repo (current directory):
-          8. Update progress/<service>.progress.yaml: phase status → completed
-          9. Commit and push progress update
-          10. If there's a next phase, trigger:
-              gh workflow run factory-lead.yml --field spec='${{ inputs.spec }}' --field phase=<next>" \
+          IMPORTANT: Do NOT update progress or trigger next phase. That will be handled automatically after you finish." \
             --yolo \
             --work-dir /tmp/target-repo \
             --agent-file ${{ github.workspace }}/agents/integrator.yaml \
-            --max-steps-per-turn 25
+            --max-steps-per-turn 35
+
+      - name: Update progress & trigger next phase
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.FACTORY_GH_PAT }}
+        run: |
+          PHASE="${{ inputs.phase }}"
+          SPEC="${{ inputs.spec }}"
+          SERVICE=$(python3 -c "
+          import yaml
+          with open('${SPEC}') as f:
+              spec = yaml.safe_load(f)
+          print(spec['service']['name'])
+          ")
+          echo "Service: ${SERVICE}, Phase: ${PHASE}"
+
+          PROGRESS_FILE="progress/${SERVICE}.progress.yaml"
+          if [ ! -f "$PROGRESS_FILE" ]; then
+            echo "::error::Progress file not found: ${PROGRESS_FILE}"
+            exit 1
+          fi
+
+          # Update phase status to completed using Python
+          python3 -c "
+          import yaml
+
+          with open('${PROGRESS_FILE}') as f:
+              progress = yaml.safe_load(f)
+
+          if '${PHASE}' in progress.get('phases', {}):
+              progress['phases']['${PHASE}']['status'] = 'completed'
+              for task_id, task in progress['phases']['${PHASE}'].get('tasks', {}).items():
+                  if isinstance(task, dict):
+                      task['status'] = 'completed'
+
+          with open('${PROGRESS_FILE}', 'w') as f:
+              yaml.dump(progress, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+          "
+
+          # Close worker issues for this phase
+          ISSUE_NUMBERS=$(gh issue list --label "factory:worker-task" --state open --json number -q '.[].number')
+          for ISSUE_NUM in $ISSUE_NUMBERS; do
+            BODY=$(gh issue view "$ISSUE_NUM" --json body -q .body)
+            ISSUE_PHASE=$(echo "$BODY" | grep -iP '\*\*Phase\*?\*?:' | head -1 | sed 's/.*[*:]\s*//' | awk '{print $1}' | tr -d '`*')
+            if [ "$ISSUE_PHASE" = "$PHASE" ]; then
+              gh issue close "$ISSUE_NUM" --comment "[factory:integrator] Phase '${PHASE}' integrated. Closing."
+            fi
+          done
+
+          # Commit and push progress update
+          git config user.name "Factory Bot"
+          git config user.email "factory@molroo.io"
+          git add "$PROGRESS_FILE"
+          git commit -m "chore(factory): mark ${PHASE} phase completed" || echo "No changes to commit"
+          git push || echo "Push failed, may need rebase"
+
+          # Determine next phase
+          NEXT_PHASE=$(python3 -c "
+          import yaml
+
+          with open('${SPEC}') as f:
+              spec = yaml.safe_load(f)
+
+          with open('${PROGRESS_FILE}') as f:
+              progress = yaml.safe_load(f)
+
+          phases = list(spec.get('phases', {}).keys())
+          for phase_id in phases:
+              phase_progress = progress.get('phases', {}).get(phase_id, {})
+              if phase_progress.get('status') not in ('completed', 'in_progress'):
+                  # Check dependencies
+                  deps = spec['phases'][phase_id].get('dependsOn', [])
+                  all_deps_done = all(
+                      progress.get('phases', {}).get(d, {}).get('status') == 'completed'
+                      for d in deps
+                  )
+                  if all_deps_done:
+                      print(phase_id)
+                      break
+          ")
+
+          if [ -n "$NEXT_PHASE" ]; then
+            echo "=== Triggering Lead for next phase: ${NEXT_PHASE} ==="
+            gh workflow run factory-lead.yml \
+              --field spec="$SPEC" \
+              --field phase="$NEXT_PHASE"
+          else
+            echo "=== All phases completed! Factory pipeline done. ==="
+          fi

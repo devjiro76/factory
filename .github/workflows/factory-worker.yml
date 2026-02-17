@@ -8,6 +8,7 @@ permissions:
   contents: write
   pull-requests: write
   issues: write
+  actions: write
 
 concurrency:
   group: factory-worker-${{ github.event.issue.number }}
@@ -96,19 +97,19 @@ jobs:
           4. If package.json exists, run 'npm install && npm run build'
           5. git add and commit: 'feat: <task description>'
           6. Push: git push origin <branch>
-          7. Create PR in the target repo: gh pr create --repo ${TARGET_REPO} ...
+          7. Create PR in the target repo: gh pr create --repo ${TARGET_REPO} --title '[factory] <task>' --body '...' --head <branch> --base main
 
           CRITICAL: Do NOT modify files outside your file ownership list.
           Read CLAUDE.md in the factory repo (current directory) for SDK patterns." \
             --yolo \
             --work-dir /tmp/target-repo \
             --agent-file ${{ github.workspace }}/agents/worker.yaml \
-            --max-steps-per-turn 20
+            --max-steps-per-turn 30
 
       - name: Report completion
         if: always()
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.FACTORY_GH_PAT }}
         run: |
           if [ "${{ job.status }}" = "success" ]; then
             gh issue comment ${{ github.event.issue.number }} \
@@ -117,3 +118,81 @@ jobs:
             gh issue comment ${{ github.event.issue.number }} \
               --body "[factory:worker-report] Worker failed. Status: ${{ job.status }}"
           fi
+
+      - name: Check phase completion & trigger integrator
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.FACTORY_GH_PAT }}
+        run: |
+          echo "=== Checking if all workers for this phase are done ==="
+
+          # Parse phase and spec from this issue's body
+          ISSUE_BODY=$(cat /tmp/issue-body.txt)
+          PHASE=$(echo "$ISSUE_BODY" | grep -iP '\*\*Phase\*?\*?:' | head -1 | sed 's/.*[*:]\s*//' | awk '{print $1}' | tr -d '`*')
+          SPEC=$(echo "$ISSUE_BODY" | grep -iP '\*\*Spec\*?\*?:' | head -1 | sed 's/.*[*:]\s*//' | awk '{print $1}' | tr -d '`*')
+
+          echo "Phase: ${PHASE}"
+          echo "Spec: ${SPEC}"
+
+          if [ -z "$PHASE" ] || [ -z "$SPEC" ]; then
+            echo "::warning::Could not parse Phase or Spec from issue body. Skipping auto-trigger."
+            echo "Issue body (first 500 chars):"
+            head -c 500 /tmp/issue-body.txt
+            exit 0
+          fi
+
+          # Get all open issues with factory:worker-task label
+          ISSUE_NUMBERS=$(gh issue list --label "factory:worker-task" --state open --json number -q '.[].number')
+          echo "All open worker issues: ${ISSUE_NUMBERS}"
+
+          TOTAL_PHASE_ISSUES=0
+          COMPLETED_PHASE_ISSUES=0
+
+          for ISSUE_NUM in $ISSUE_NUMBERS; do
+            # Read issue body to check if it belongs to the same phase
+            BODY=$(gh issue view "$ISSUE_NUM" --json body -q .body)
+            ISSUE_PHASE=$(echo "$BODY" | grep -iP '\*\*Phase\*?\*?:' | head -1 | sed 's/.*[*:]\s*//' | awk '{print $1}' | tr -d '`*')
+
+            if [ "$ISSUE_PHASE" != "$PHASE" ]; then
+              continue
+            fi
+
+            TOTAL_PHASE_ISSUES=$((TOTAL_PHASE_ISSUES + 1))
+
+            # Check if this issue has a "Worker completed" comment
+            COMPLETED=$(gh issue view "$ISSUE_NUM" --json comments -q '.comments[].body' | grep -c '\[factory:worker-report\] Worker completed' || true)
+            if [ "$COMPLETED" -gt 0 ]; then
+              COMPLETED_PHASE_ISSUES=$((COMPLETED_PHASE_ISSUES + 1))
+            fi
+          done
+
+          echo "Phase '${PHASE}': ${COMPLETED_PHASE_ISSUES}/${TOTAL_PHASE_ISSUES} workers completed"
+
+          if [ "$TOTAL_PHASE_ISSUES" -eq 0 ]; then
+            echo "::warning::No issues found for phase '${PHASE}'"
+            exit 0
+          fi
+
+          if [ "$COMPLETED_PHASE_ISSUES" -lt "$TOTAL_PHASE_ISSUES" ]; then
+            echo "Not all workers done yet. Waiting for others."
+            exit 0
+          fi
+
+          echo "=== All workers done! Triggering Integrator ==="
+
+          # Collect PR numbers from target repo
+          TARGET_REPO=$(echo "$ISSUE_BODY" | grep -oP 'molroo-ai/[a-z0-9_-]+' | head -1)
+          PRS=$(gh pr list --repo "$TARGET_REPO" --state open --json number,title -q '.[] | select(.title | startswith("[factory]")) | .number' | tr '\n' ',' | sed 's/,$//')
+          echo "PRs to integrate: ${PRS}"
+
+          if [ -z "$PRS" ]; then
+            echo "::warning::No open factory PRs found in ${TARGET_REPO}"
+            exit 0
+          fi
+
+          gh workflow run factory-integrator.yml \
+            --field spec="$SPEC" \
+            --field phase="$PHASE" \
+            --field prs="$PRS"
+
+          echo "Integrator triggered for phase=${PHASE}, prs=${PRS}"

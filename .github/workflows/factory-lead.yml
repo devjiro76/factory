@@ -11,8 +11,6 @@ on:
         description: "Specific phase to execute (optional)"
         required: false
         type: string
-  issue_comment:
-    types: [created]
 
 permissions:
   contents: write
@@ -20,11 +18,12 @@ permissions:
   issues: write
   actions: write
 
+concurrency:
+  group: factory-lead
+  cancel-in-progress: false
+
 jobs:
   lead:
-    if: |
-      github.event_name == 'workflow_dispatch' ||
-      contains(github.event.comment.body, '[factory:worker-report]')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -79,12 +78,31 @@ jobs:
                cd /tmp/target-repo && git commit --allow-empty -m 'feat: init' && git push
           6. For each task in the phase, create a GitHub Issue IN THIS REPO (not target) with label 'factory:worker-task'
              Use 'gh label create factory:worker-task --color FF6B35 --force' first.
-             Each issue body must specify:
-               - Target repo (from spec)
-               - File ownership list (paths relative to target repo root)
-               - Branch name
-               - Implementation requirements
-               - Reference: read factory/CLAUDE.md for SDK patterns
+
+             CRITICAL: Each issue body MUST follow this EXACT format at the top:
+             ---
+             ## Factory Worker Task: <task-id>
+
+             **Target Repo:** <repo from spec>
+             **Phase:** <phase-id>
+             **Spec:** ${SPEC_PATH}
+             **Branch:** factory/<task-id>
+
+             ### File Ownership
+             <list of files>
+
+             ### Requirements
+             <requirements from spec>
+
+             ### Reference
+             Read factory/CLAUDE.md for SDK patterns and tech stack requirements.
+
+             ---
+             *This is a factory-generated task. Report completion with [factory:worker-report] in a comment.*
+             ---
+
+             The **Phase:** and **Spec:** fields are CRITICAL for automation. Do NOT omit them.
+
           7. Update progress YAML: set phase status to 'in_progress', each task to 'dispatched' with issue number
           8. Commit and push the progress update to this repo" \
             --yolo \
