@@ -102,6 +102,41 @@ jobs:
             --agent-file ${{ github.workspace }}/agents/integrator.yaml \
             --max-steps-per-turn 35
 
+      - name: Report integration failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.FACTORY_GH_PAT }}
+        run: |
+          PHASE="${{ inputs.phase }}"
+          SPEC="${{ inputs.spec }}"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          gh label create "factory:blocked" --color D93F0B --force 2>/dev/null || true
+          gh issue create \
+            --title "[factory:blocked] Integration failed — Phase '${PHASE}'" \
+            --label "factory:blocked" \
+            --body "## Integration Failure
+
+          **Phase:** ${PHASE}
+          **Spec:** ${SPEC}
+          **Worker PRs:** ${{ inputs.prs }}
+
+          The Integrator agent failed to merge worker PRs for this phase.
+
+          ### Possible causes
+          - Merge conflicts between worker branches
+          - Build failure after merge
+          - Kimi agent hit max-steps
+
+          ### Recovery options
+          1. Review the [run log](${RUN_URL})
+          2. Fix issues manually in the target repo
+          3. Re-trigger: \`gh workflow run factory-integrator.yml --field spec=\"${SPEC}\" --field phase=\"${PHASE}\" --field prs=\"${{ inputs.prs }}\"\`
+          4. Or use the recovery workflow: \`gh workflow run factory-recover.yml --field spec=\"${SPEC}\" --field phase=\"${PHASE}\" --field action=\"retry-integration\"\`
+
+          ---
+          *This issue was auto-created by the Factory pipeline.*"
+
       - name: Merge integration PR & close worker PRs
         if: success()
         env:

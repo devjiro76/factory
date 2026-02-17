@@ -1,0 +1,248 @@
+name: "Factory: Recovery"
+
+on:
+  workflow_dispatch:
+    inputs:
+      spec:
+        description: "Path to service spec YAML"
+        required: true
+        type: string
+      phase:
+        description: "Phase ID to recover"
+        required: true
+        type: string
+      action:
+        description: "Recovery action"
+        required: true
+        type: choice
+        options:
+          - retry-phase
+          - retry-integration
+          - skip-phase
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: write
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.FACTORY_GH_PAT }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: "Recovery: retry-phase"
+        if: inputs.action == 'retry-phase'
+        env:
+          GH_TOKEN: ${{ secrets.FACTORY_GH_PAT }}
+        run: |
+          PHASE="${{ inputs.phase }}"
+          SPEC="${{ inputs.spec }}"
+
+          echo "=== Retrying phase '${PHASE}' from scratch ==="
+
+          # Reset phase progress to pending
+          SERVICE=$(python3 -c "
+          import yaml
+          with open('${SPEC}') as f:
+              spec = yaml.safe_load(f)
+          print(spec['service']['name'])
+          ")
+          PROGRESS_FILE="progress/${SERVICE}.progress.yaml"
+
+          python3 -c "
+          import yaml
+
+          with open('${PROGRESS_FILE}') as f:
+              progress = yaml.safe_load(f)
+
+          if '${PHASE}' in progress.get('phases', {}):
+              progress['phases']['${PHASE}']['status'] = 'pending'
+              progress['phases']['${PHASE}']['integrationPR'] = None
+              for task_id, task in progress['phases']['${PHASE}'].get('tasks', {}).items():
+                  if isinstance(task, dict):
+                      task['status'] = 'pending'
+                      task['issue'] = None
+                      task['pr'] = None
+
+          with open('${PROGRESS_FILE}', 'w') as f:
+              yaml.dump(progress, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+          "
+
+          # Close any open blocked issues for this phase
+          ISSUE_NUMBERS=$(gh issue list --label "factory:blocked" --state open --json number -q '.[].number')
+          for ISSUE_NUM in $ISSUE_NUMBERS; do
+            BODY=$(gh issue view "$ISSUE_NUM" --json body -q .body)
+            if echo "$BODY" | grep -q "${PHASE}"; then
+              gh issue close "$ISSUE_NUM" --comment "[factory:recover] Phase '${PHASE}' being retried. Closing blocked issue."
+            fi
+          done
+
+          # Close any remaining worker issues for this phase
+          WORKER_ISSUES=$(gh issue list --label "factory:worker-task" --state open --json number -q '.[].number')
+          for ISSUE_NUM in $WORKER_ISSUES; do
+            BODY=$(gh issue view "$ISSUE_NUM" --json body -q .body)
+            ISSUE_PHASE=$(echo "$BODY" | grep -iP '\*\*Phase\*?\*?:' | head -1 | sed 's/.*[*:]\s*//' | awk '{print $1}' | tr -d '`*')
+            if [ "$ISSUE_PHASE" = "$PHASE" ]; then
+              gh issue close "$ISSUE_NUM" --comment "[factory:recover] Phase '${PHASE}' reset. Closing old task."
+            fi
+          done
+
+          # Commit progress reset
+          git config user.name "Factory Bot"
+          git config user.email "factory@molroo.io"
+          git add "$PROGRESS_FILE"
+          git commit -m "chore(factory): reset ${PHASE} phase for retry" || echo "No changes"
+          git push
+
+          # Re-trigger Lead for this phase
+          echo "=== Triggering Lead for phase: ${PHASE} ==="
+          gh workflow run factory-lead.yml \
+            --field spec="$SPEC" \
+            --field phase="$PHASE"
+
+      - name: "Recovery: retry-integration"
+        if: inputs.action == 'retry-integration'
+        env:
+          GH_TOKEN: ${{ secrets.FACTORY_GH_PAT }}
+        run: |
+          PHASE="${{ inputs.phase }}"
+          SPEC="${{ inputs.spec }}"
+
+          echo "=== Retrying integration for phase '${PHASE}' ==="
+
+          # Read target repo from spec
+          TARGET_REPO=$(grep 'repo:' "$SPEC" | head -1 | awk '{print $2}')
+
+          # Collect open factory PRs
+          PRS=$(gh pr list --repo "$TARGET_REPO" --state open --json number,title -q '.[] | select(.title | startswith("[factory]")) | .number' | tr '\n' ',' | sed 's/,$//')
+
+          if [ -z "$PRS" ]; then
+            echo "::error::No open factory PRs found in ${TARGET_REPO}. Cannot retry integration."
+            exit 1
+          fi
+
+          echo "PRs to integrate: ${PRS}"
+
+          # Close any blocked integration issues
+          ISSUE_NUMBERS=$(gh issue list --label "factory:blocked" --state open --json number -q '.[].number')
+          for ISSUE_NUM in $ISSUE_NUMBERS; do
+            TITLE=$(gh issue view "$ISSUE_NUM" --json title -q .title)
+            if echo "$TITLE" | grep -q "Integration failed"; then
+              gh issue close "$ISSUE_NUM" --comment "[factory:recover] Re-triggering integration."
+            fi
+          done
+
+          # Clean up stale integration branch/PR
+          STALE_PR=$(gh pr list --repo "$TARGET_REPO" --state open --head "integrate/${PHASE}" --json number -q '.[0].number')
+          if [ -n "$STALE_PR" ]; then
+            gh pr close "$STALE_PR" --repo "$TARGET_REPO" --delete-branch \
+              --comment "[factory:recover] Closing stale integration PR before retry." 2>/dev/null || true
+          fi
+
+          gh workflow run factory-integrator.yml \
+            --field spec="$SPEC" \
+            --field phase="$PHASE" \
+            --field prs="$PRS"
+
+          echo "Integrator re-triggered for phase=${PHASE}, prs=${PRS}"
+
+      - name: "Recovery: skip-phase"
+        if: inputs.action == 'skip-phase'
+        env:
+          GH_TOKEN: ${{ secrets.FACTORY_GH_PAT }}
+        run: |
+          PHASE="${{ inputs.phase }}"
+          SPEC="${{ inputs.spec }}"
+
+          echo "=== Skipping phase '${PHASE}' ==="
+
+          SERVICE=$(python3 -c "
+          import yaml
+          with open('${SPEC}') as f:
+              spec = yaml.safe_load(f)
+          print(spec['service']['name'])
+          ")
+          PROGRESS_FILE="progress/${SERVICE}.progress.yaml"
+
+          # Mark phase as completed (skipped)
+          python3 -c "
+          import yaml
+
+          with open('${PROGRESS_FILE}') as f:
+              progress = yaml.safe_load(f)
+
+          if '${PHASE}' in progress.get('phases', {}):
+              progress['phases']['${PHASE}']['status'] = 'completed'
+              for task_id, task in progress['phases']['${PHASE}'].get('tasks', {}).items():
+                  if isinstance(task, dict):
+                      task['status'] = 'completed'
+
+          with open('${PROGRESS_FILE}', 'w') as f:
+              yaml.dump(progress, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+          "
+
+          # Close any open issues for this phase
+          ISSUE_NUMBERS=$(gh issue list --label "factory:worker-task" --state open --json number -q '.[].number')
+          for ISSUE_NUM in $ISSUE_NUMBERS; do
+            BODY=$(gh issue view "$ISSUE_NUM" --json body -q .body)
+            ISSUE_PHASE=$(echo "$BODY" | grep -iP '\*\*Phase\*?\*?:' | head -1 | sed 's/.*[*:]\s*//' | awk '{print $1}' | tr -d '`*')
+            if [ "$ISSUE_PHASE" = "$PHASE" ]; then
+              gh issue close "$ISSUE_NUM" --comment "[factory:recover] Phase '${PHASE}' skipped."
+            fi
+          done
+
+          BLOCKED_ISSUES=$(gh issue list --label "factory:blocked" --state open --json number -q '.[].number')
+          for ISSUE_NUM in $BLOCKED_ISSUES; do
+            BODY=$(gh issue view "$ISSUE_NUM" --json body -q .body)
+            if echo "$BODY" | grep -q "${PHASE}"; then
+              gh issue close "$ISSUE_NUM" --comment "[factory:recover] Phase '${PHASE}' skipped."
+            fi
+          done
+
+          # Commit and push
+          git config user.name "Factory Bot"
+          git config user.email "factory@molroo.io"
+          git add "$PROGRESS_FILE"
+          git commit -m "chore(factory): skip ${PHASE} phase" || echo "No changes"
+          git push
+
+          # Determine and trigger next phase
+          NEXT_PHASE=$(python3 -c "
+          import yaml
+
+          with open('${SPEC}') as f:
+              spec = yaml.safe_load(f)
+          with open('${PROGRESS_FILE}') as f:
+              progress = yaml.safe_load(f)
+
+          phases = list(spec.get('phases', {}).keys())
+          for phase_id in phases:
+              phase_progress = progress.get('phases', {}).get(phase_id, {})
+              if phase_progress.get('status') not in ('completed', 'in_progress'):
+                  deps = spec['phases'][phase_id].get('dependsOn', [])
+                  all_deps_done = all(
+                      progress.get('phases', {}).get(d, {}).get('status') == 'completed'
+                      for d in deps
+                  )
+                  if all_deps_done:
+                      print(phase_id)
+                      break
+          ")
+
+          if [ -n "$NEXT_PHASE" ]; then
+            echo "=== Triggering Lead for next phase: ${NEXT_PHASE} ==="
+            gh workflow run factory-lead.yml \
+              --field spec="$SPEC" \
+              --field phase="$NEXT_PHASE"
+          else
+            echo "=== All phases completed! ==="
+          fi

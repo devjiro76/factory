@@ -16,7 +16,9 @@ concurrency:
 
 jobs:
   worker:
-    if: github.event.label.name == 'factory:worker-task'
+    if: >-
+      github.event.label.name == 'factory:worker-task' ||
+      github.event.label.name == 'factory:retry'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -42,6 +44,17 @@ jobs:
           echo "${KIMI_CONFIG}" > ~/.kimi/config.toml
           echo "${KIMI_CREDENTIALS}" > ~/.kimi/credentials/kimi-code.json
           echo "${KIMI_DEVICE_ID}" > ~/.kimi/device_id
+
+      - name: Prepare (clear blocked state on retry)
+        if: github.event.label.name == 'factory:retry'
+        env:
+          GH_TOKEN: ${{ secrets.FACTORY_GH_PAT }}
+        run: |
+          ISSUE_NUM=${{ github.event.issue.number }}
+          echo "=== Retry mode: clearing blocked state ==="
+          gh issue edit "$ISSUE_NUM" --remove-label "factory:blocked" 2>/dev/null || true
+          gh issue edit "$ISSUE_NUM" --remove-label "factory:retry" 2>/dev/null || true
+          gh issue comment "$ISSUE_NUM" --body "[factory:worker] Retrying task..."
 
       - name: Read Issue Body
         id: issue
@@ -72,6 +85,25 @@ jobs:
           cd /tmp/target-repo
           git config user.name "Factory Bot"
           git config user.email "factory@molroo.io"
+
+      - name: Clean up stale branch on retry
+        if: github.event.label.name == 'factory:retry'
+        env:
+          GH_TOKEN: ${{ secrets.FACTORY_GH_PAT }}
+        run: |
+          cd /tmp/target-repo
+          # Parse branch name from issue body
+          BRANCH=$(grep -iP '\*\*Branch\*?\*?:' /tmp/issue-body.txt | head -1 | grep -oP 'factory/[a-z0-9_-]+' | head -1)
+          if [ -n "$BRANCH" ]; then
+            echo "Cleaning up stale branch: ${BRANCH}"
+            git push origin --delete "$BRANCH" 2>/dev/null || echo "Branch ${BRANCH} not on remote, OK."
+            # Close stale PR if exists
+            STALE_PR=$(gh pr list --repo "$TARGET_REPO" --state open --head "$BRANCH" --json number -q '.[0].number')
+            if [ -n "$STALE_PR" ]; then
+              gh pr close "$STALE_PR" --repo "$TARGET_REPO" --delete-branch \
+                --comment "[factory:worker] Closing stale PR before retry." 2>/dev/null || true
+            fi
+          fi
 
       - name: Worker Agent — Implement Task
         env:
@@ -111,12 +143,26 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.FACTORY_GH_PAT }}
         run: |
+          ISSUE_NUM=${{ github.event.issue.number }}
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
           if [ "${{ job.status }}" = "success" ]; then
-            gh issue comment ${{ github.event.issue.number }} \
-              --body "[factory:worker-report] Worker completed. Check ${TARGET_REPO} for PR."
+            gh issue comment "$ISSUE_NUM" \
+              --body "[factory:worker-report] Worker completed. Check ${TARGET_REPO} for PR.
+          Run: ${RUN_URL}"
           else
-            gh issue comment ${{ github.event.issue.number }} \
-              --body "[factory:worker-report] Worker failed. Status: ${{ job.status }}"
+            gh issue comment "$ISSUE_NUM" \
+              --body "[factory:worker-report] Worker **failed**. Status: \`${{ job.status }}\`
+
+          **Action required:** Review the error and either:
+          1. Fix the issue, then add \`factory:retry\` label to re-run
+          2. Or close this issue to skip this task
+
+          Run log: ${RUN_URL}"
+
+            # Add blocked label to signal human attention needed
+            gh label create "factory:blocked" --color D93F0B --force 2>/dev/null || true
+            gh issue edit "$ISSUE_NUM" --add-label "factory:blocked"
           fi
 
       - name: Check phase completion & trigger integrator
@@ -147,6 +193,7 @@ jobs:
 
           TOTAL_PHASE_ISSUES=0
           COMPLETED_PHASE_ISSUES=0
+          BLOCKED_PHASE_ISSUES=0
 
           for ISSUE_NUM in $ISSUE_NUMBERS; do
             # Read issue body to check if it belongs to the same phase
@@ -159,6 +206,13 @@ jobs:
 
             TOTAL_PHASE_ISSUES=$((TOTAL_PHASE_ISSUES + 1))
 
+            # Check if blocked
+            LABELS=$(gh issue view "$ISSUE_NUM" --json labels -q '.labels[].name')
+            if echo "$LABELS" | grep -q "factory:blocked"; then
+              BLOCKED_PHASE_ISSUES=$((BLOCKED_PHASE_ISSUES + 1))
+              continue
+            fi
+
             # Check if this issue has a "Worker completed" comment
             COMPLETED=$(gh issue view "$ISSUE_NUM" --json comments -q '.comments[].body' | grep -c '\[factory:worker-report\] Worker completed' || true)
             if [ "$COMPLETED" -gt 0 ]; then
@@ -166,10 +220,15 @@ jobs:
             fi
           done
 
-          echo "Phase '${PHASE}': ${COMPLETED_PHASE_ISSUES}/${TOTAL_PHASE_ISSUES} workers completed"
+          echo "Phase '${PHASE}': ${COMPLETED_PHASE_ISSUES} completed, ${BLOCKED_PHASE_ISSUES} blocked, ${TOTAL_PHASE_ISSUES} total"
 
           if [ "$TOTAL_PHASE_ISSUES" -eq 0 ]; then
             echo "::warning::No issues found for phase '${PHASE}'"
+            exit 0
+          fi
+
+          if [ "$BLOCKED_PHASE_ISSUES" -gt 0 ]; then
+            echo "::warning::${BLOCKED_PHASE_ISSUES} worker(s) blocked. Cannot proceed until resolved."
             exit 0
           fi
 
