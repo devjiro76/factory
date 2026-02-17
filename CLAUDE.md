@@ -67,6 +67,89 @@ const result = await world.chat('EntityName', 'Hello!', {
 - **Language**: TypeScript 5.3+
 - **Deploy**: Cloudflare Pages
 
+## Operations Guide
+
+### Labels
+
+| Label | Meaning | Who sets it |
+|-------|---------|-------------|
+| `factory:worker-task` | Worker task issue — triggers Worker workflow | Lead agent |
+| `factory:blocked` | Something failed and needs human attention | Worker / Integrator (auto) |
+| `factory:retry` | Re-run a failed Worker — triggers Worker workflow | **Human** |
+
+### Pipeline Status — Where to Look
+
+| What | Where |
+|------|-------|
+| Overall progress | `progress/<service>.progress.yaml` |
+| Active workers | Issues tab → filter `factory:worker-task` `is:open` |
+| Blocked tasks | Issues tab → filter `factory:blocked` |
+| Workflow runs | Actions tab |
+| Target repo PRs | `github.com/molroo-ai/<service>/pulls` |
+
+### When Something Fails
+
+**Worker failed** (most common)
+1. Issue gets `factory:blocked` label automatically
+2. Error comment appears on the issue with a link to the Actions run log
+3. To fix: review the log, then add `factory:retry` label to the issue
+4. Worker re-runs automatically (cleans up stale branch/PR first)
+
+**Integrator failed** (merge conflict, build error)
+1. A new issue is created with `factory:blocked` label and recovery instructions
+2. Option A — Re-run integrator:
+   ```
+   gh workflow run factory-recover.yml \
+     --field spec="specs/<service>.spec.yaml" \
+     --field phase="<phase>" \
+     --field action="retry-integration"
+   ```
+3. Option B — Skip the phase entirely:
+   ```
+   gh workflow run factory-recover.yml \
+     --field spec="specs/<service>.spec.yaml" \
+     --field phase="<phase>" \
+     --field action="skip-phase"
+   ```
+
+**Lead failed** (spec error, repo creation failed)
+1. A new issue is created with `factory:blocked` label
+2. Fix the cause (spec YAML, permissions, etc.)
+3. Re-trigger:
+   ```
+   gh workflow run factory-lead.yml \
+     --field spec="specs/<service>.spec.yaml" \
+     --field phase="<phase>"
+   ```
+
+**Entire phase needs a do-over**
+```
+gh workflow run factory-recover.yml \
+  --field spec="specs/<service>.spec.yaml" \
+  --field phase="<phase>" \
+  --field action="retry-phase"
+```
+This resets progress, closes old issues, and re-triggers Lead from scratch.
+
+### Quick Reference — Recovery Commands
+
+```bash
+# Retry a single worker: just add label in GitHub UI
+# Issues → find blocked issue → Add label → factory:retry
+
+# Retry integration
+gh workflow run factory-recover.yml -f spec="specs/pet-chatbot.spec.yaml" -f phase="core" -f action="retry-integration"
+
+# Retry entire phase from scratch
+gh workflow run factory-recover.yml -f spec="specs/pet-chatbot.spec.yaml" -f phase="core" -f action="retry-phase"
+
+# Skip a phase and move on
+gh workflow run factory-recover.yml -f spec="specs/pet-chatbot.spec.yaml" -f phase="core" -f action="skip-phase"
+
+# Manual trigger from specific phase
+gh workflow run factory-lead.yml -f spec="specs/pet-chatbot.spec.yaml" -f phase="core"
+```
+
 ## Required Secrets
 
 | Secret | Purpose |
