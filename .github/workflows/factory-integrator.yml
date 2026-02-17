@@ -43,19 +43,8 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install Kimi CLI
-        run: pip install kimi-cli
-
-      - name: Setup Kimi Subscription Auth
-        env:
-          KIMI_CONFIG: ${{ secrets.KIMI_CONFIG }}
-          KIMI_CREDENTIALS: ${{ secrets.KIMI_CREDENTIALS }}
-          KIMI_DEVICE_ID: ${{ secrets.KIMI_DEVICE_ID }}
-        run: |
-          mkdir -p ~/.kimi/credentials
-          echo "${KIMI_CONFIG}" > ~/.kimi/config.toml
-          echo "${KIMI_CREDENTIALS}" > ~/.kimi/credentials/kimi-code.json
-          echo "${KIMI_DEVICE_ID}" > ~/.kimi/device_id
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
 
       - name: Read target repo from spec
         id: target
@@ -74,33 +63,38 @@ jobs:
 
       - name: Integrator — Merge & Verify
         env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GH_TOKEN: ${{ secrets.FACTORY_GH_PAT }}
         run: |
-          kimi --print \
-            --prompt "You are the Factory Integrator Agent.
+          cd /tmp/target-repo
 
-          Target repo: ${{ steps.target.outputs.repo }} (cloned at /tmp/target-repo)
-          Factory repo: current directory (has specs, progress)
+          claude -p "You are the Factory Integrator Agent.
+
+          Target repo: ${{ steps.target.outputs.repo }} (cloned at current directory)
           Phase: ${{ inputs.phase }}
           Worker PRs to merge: ${{ inputs.prs }}
 
           Instructions:
-          1. Work in /tmp/target-repo for merge operations
-          2. Create integration branch: integrate/${{ inputs.phase }}
-          3. For each PR number in '${{ inputs.prs }}':
+          1. Create integration branch: integrate/${{ inputs.phase }}
+          2. For each PR number in '${{ inputs.prs }}':
              - Get branch: gh pr view <num> --repo ${{ steps.target.outputs.repo }} --json headRefName -q .headRefName
              - git fetch origin && git merge --no-ff origin/<branch>
              - Resolve conflicts if any
-          4. Run: npm install && npm run build (if package.json exists)
-          5. Fix build issues if needed
-          6. Push integration branch to target repo
-          7. Create integration PR in target repo
+          3. Run: npm install && npm run build (if package.json exists)
+          4. Fix build issues if needed
+          5. Push integration branch to target repo
+          6. Create integration PR in target repo
 
           IMPORTANT: Do NOT update progress or trigger next phase. That will be handled automatically after you finish." \
-            --yolo \
-            --work-dir /tmp/target-repo \
-            --agent-file ${{ github.workspace }}/agents/integrator.yaml \
-            --max-steps-per-turn 35
+            --output-format text \
+            --max-turns 35 \
+            --dangerously-skip-permissions
+
+          CLAUDE_EXIT=$?
+          if [ $CLAUDE_EXIT -ne 0 ]; then
+            echo "::error::Claude Code exited with code $CLAUDE_EXIT"
+            exit 1
+          fi
 
       - name: Report integration failure
         if: failure()
@@ -126,7 +120,7 @@ jobs:
           ### Possible causes
           - Merge conflicts between worker branches
           - Build failure after merge
-          - Kimi agent hit max-steps
+          - Claude agent hit max-turns
 
           ### Recovery options
           1. Review the [run log](${RUN_URL})

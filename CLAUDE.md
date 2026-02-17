@@ -1,6 +1,6 @@
 # molroo Service Factory
 
-Automated service generation pipeline using Kimi Code CLI + GitHub Actions.
+Automated service generation pipeline using Claude Code CLI + GitHub Actions.
 Each generated service is created as an independent repo under `molroo-ai/` org.
 
 ## Repository Model
@@ -191,8 +191,6 @@ deployPlatform: vercel
 
 | Secret | Purpose |
 |--------|---------|
-| `KIMI_CONFIG` | Kimi CLI config.toml (subscription auth) |
-| `KIMI_CREDENTIALS` | Kimi OAuth credentials |
-| `KIMI_DEVICE_ID` | Kimi device identifier |
+| `ANTHROPIC_API_KEY` | Anthropic API key for Claude Code CLI (https://console.anthropic.com) |
 | `FACTORY_GH_PAT` | GitHub PAT with `repo` + `workflow` scope for cross-repo ops |
 | `VERCEL_TOKEN` | Vercel deploy token (https://vercel.com/account/tokens) |

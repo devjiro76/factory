@@ -27,23 +27,8 @@ jobs:
         with:
           node-version: 20
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install Kimi CLI
-        run: pip install kimi-cli
-
-      - name: Setup Kimi Subscription Auth
-        env:
-          KIMI_CONFIG: ${{ secrets.KIMI_CONFIG }}
-          KIMI_CREDENTIALS: ${{ secrets.KIMI_CREDENTIALS }}
-          KIMI_DEVICE_ID: ${{ secrets.KIMI_DEVICE_ID }}
-        run: |
-          mkdir -p ~/.kimi/credentials
-          echo "${KIMI_CONFIG}" > ~/.kimi/config.toml
-          echo "${KIMI_CREDENTIALS}" > ~/.kimi/credentials/kimi-code.json
-          echo "${KIMI_DEVICE_ID}" > ~/.kimi/device_id
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
 
       - name: Prepare (clear blocked state on retry)
         if: github.event.label.name == 'factory:retry'
@@ -105,22 +90,30 @@ jobs:
             fi
           fi
 
+      - name: Copy factory CLAUDE.md to target repo
+        run: |
+          # Make factory SDK patterns available in the target repo working directory
+          cp ${{ github.workspace }}/CLAUDE.md /tmp/target-repo/.factory-claude.md
+
       - name: Worker Agent — Implement Task
         env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           GH_TOKEN: ${{ secrets.FACTORY_GH_PAT }}
         run: |
           ISSUE_BODY=$(cat /tmp/issue-body.txt)
+          FACTORY_INSTRUCTIONS=$(cat /tmp/target-repo/.factory-claude.md)
 
-          kimi --print \
-            --prompt "You are a Factory Worker Agent. Task issue #${{ github.event.issue.number }}.
+          cd /tmp/target-repo
+
+          claude -p "You are a Factory Worker Agent. Task issue #${{ github.event.issue.number }}.
 
           Issue title: ${{ steps.issue.outputs.title }}
 
           Issue body:
           ${ISSUE_BODY}
 
-          IMPORTANT: You are working in /tmp/target-repo which is the cloned target repo.
-          All file paths in the issue are relative to this repo root.
+          Factory SDK patterns and conventions:
+          ${FACTORY_INSTRUCTIONS}
 
           Instructions:
           1. Read the issue body for file ownership, branch name, and requirements
@@ -131,12 +124,16 @@ jobs:
           6. Push: git push origin <branch>
           7. Create PR in the target repo: gh pr create --repo ${TARGET_REPO} --title '[factory] <task>' --body '...' --head <branch> --base main
 
-          CRITICAL: Do NOT modify files outside your file ownership list.
-          Read CLAUDE.md in the factory repo (current directory) for SDK patterns." \
-            --yolo \
-            --work-dir /tmp/target-repo \
-            --agent-file ${{ github.workspace }}/agents/worker.yaml \
-            --max-steps-per-turn 30
+          CRITICAL: Do NOT modify files outside your file ownership list." \
+            --output-format text \
+            --max-turns 30 \
+            --dangerously-skip-permissions
+
+          CLAUDE_EXIT=$?
+          if [ $CLAUDE_EXIT -ne 0 ]; then
+            echo "::error::Claude Code exited with code $CLAUDE_EXIT"
+            exit 1
+          fi
 
       - name: Report completion
         if: always()
