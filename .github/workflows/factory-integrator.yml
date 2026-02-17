@@ -43,8 +43,10 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install Claude Code CLI
-        run: npm install -g @anthropic-ai/claude-code
+      - name: Install dependencies
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          pip install pyyaml
 
       - name: Read target repo from spec
         id: target
