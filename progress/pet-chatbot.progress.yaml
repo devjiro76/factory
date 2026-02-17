@@ -1,11 +1,7 @@
-# Pet Chatbot — Progress Tracker
-# Auto-updated by Lead and Integrator agents
-
 service: pet-chatbot
 repo: molroo-ai/pet-chatbot
 spec: specs/pet-chatbot.spec.yaml
-createdAt: "2026-02-17T00:00:00Z"
-
+createdAt: '2026-02-17T00:00:00Z'
 phases:
   scaffold:
     status: completed
@@ -27,43 +23,41 @@ phases:
         branch: factory/scaffold-tooling
     integrationBranch: integrate/scaffold
     integrationPR: 4
-
   core:
-    status: in_progress
+    status: completed
     tasks:
       ui-chat-panel:
-        status: dispatched
+        status: completed
         issue: 5
         pr: null
         branch: factory/ui-chat-panel
       ui-layout:
-        status: dispatched
+        status: completed
         issue: 6
         pr: null
         branch: factory/ui-layout
       ui-pet-avatar:
-        status: dispatched
+        status: completed
         issue: 7
         pr: null
         branch: factory/ui-pet-avatar
       sdk-client:
-        status: dispatched
+        status: completed
         issue: 8
         pr: null
         branch: factory/sdk-client
       sdk-chat-hook:
-        status: dispatched
+        status: completed
         issue: 9
         pr: null
         branch: factory/sdk-chat-hook
       sdk-world-setup:
-        status: dispatched
+        status: completed
         issue: 10
         pr: null
         branch: factory/sdk-world-setup
     integrationBranch: integrate/core
     integrationPR: null
-
   emotion-viz:
     status: pending
     tasks:
@@ -84,7 +78,6 @@ phases:
         branch: factory/viz-integration
     integrationBranch: integrate/emotion-viz
     integrationPR: null
-
   polish:
     status: pending
     tasks:
