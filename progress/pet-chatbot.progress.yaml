@@ -79,20 +79,20 @@ phases:
     integrationBranch: integrate/emotion-viz
     integrationPR: null
   polish:
-    status: in_progress
+    status: completed
     tasks:
       polish-error:
-        status: dispatched
+        status: completed
         issue: 14
         pr: null
         branch: factory/polish-error
       polish-responsive:
-        status: dispatched
+        status: completed
         issue: 15
         pr: null
         branch: factory/polish-responsive
       polish-deploy:
-        status: dispatched
+        status: completed
         issue: 16
         pr: null
         branch: factory/polish-deploy
