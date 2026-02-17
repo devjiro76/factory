@@ -40,7 +40,7 @@ jobs:
 
       - name: Lead Agent — Plan & Dispatch
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GH_TOKEN: ${{ secrets.FACTORY_GH_PAT }}
         run: |
           SPEC_PATH="${{ inputs.spec }}"

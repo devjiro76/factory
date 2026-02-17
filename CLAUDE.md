@@ -191,6 +191,6 @@ deployPlatform: vercel
 
 | Secret | Purpose |
 |--------|---------|
-| `ANTHROPIC_API_KEY` | Anthropic API key for Claude Code CLI (https://console.anthropic.com) |
+| `CLAUDE_CODE_OAUTH_TOKEN` | Claude Code OAuth token via `claude setup-token` (subscription auth) |
 | `FACTORY_GH_PAT` | GitHub PAT with `repo` + `workflow` scope for cross-repo ops |
 | `VERCEL_TOKEN` | Vercel deploy token (https://vercel.com/account/tokens) |
