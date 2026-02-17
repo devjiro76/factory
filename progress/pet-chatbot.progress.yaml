@@ -29,36 +29,36 @@ phases:
     integrationPR: 4
 
   core:
-    status: pending
+    status: in_progress
     tasks:
       ui-chat-panel:
-        status: pending
-        issue: null
+        status: dispatched
+        issue: 5
         pr: null
         branch: factory/ui-chat-panel
       ui-layout:
-        status: pending
-        issue: null
+        status: dispatched
+        issue: 6
         pr: null
         branch: factory/ui-layout
       ui-pet-avatar:
-        status: pending
-        issue: null
+        status: dispatched
+        issue: 7
         pr: null
         branch: factory/ui-pet-avatar
       sdk-client:
-        status: pending
-        issue: null
+        status: dispatched
+        issue: 8
         pr: null
         branch: factory/sdk-client
       sdk-chat-hook:
-        status: pending
-        issue: null
+        status: dispatched
+        issue: 9
         pr: null
         branch: factory/sdk-chat-hook
       sdk-world-setup:
-        status: pending
-        issue: null
+        status: dispatched
+        issue: 10
         pr: null
         branch: factory/sdk-world-setup
     integrationBranch: integrate/core
