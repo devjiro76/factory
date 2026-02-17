@@ -24,7 +24,7 @@ phases:
     integrationBranch: integrate/scaffold
     integrationPR: 4
   core:
-    status: in_progress
+    status: completed
     tasks:
       ui-chat-panel:
         status: completed
@@ -52,14 +52,14 @@ phases:
         pr: 15
         branch: factory/sdk-chat-hook
       sdk-world-setup:
-        status: dispatched
+        status: completed
         issue: 17
-        pr: null
+        pr: 24
         branch: factory/sdk-world-setup
     integrationBranch: integrate/core
-    integrationPR: 21
+    integrationPR: 27
   emotion-viz:
-    status: in_progress
+    status: completed
     tasks:
       viz-emotion-map:
         status: completed
@@ -72,9 +72,9 @@ phases:
         pr: 18
         branch: factory/viz-emotion-display
       viz-integration:
-        status: dispatched
+        status: completed
         issue: 18
-        pr: null
+        pr: 26
         branch: factory/viz-integration
     integrationBranch: integrate/emotion-viz
     integrationPR: 22
@@ -84,12 +84,12 @@ phases:
       polish-error:
         status: completed
         issue: 19
-        pr: null
+        pr: 25
         branch: factory/polish-error
       polish-responsive:
         status: completed
         issue: 20
-        pr: null
+        pr: 28
         branch: factory/polish-responsive
       polish-deploy:
         status: completed
