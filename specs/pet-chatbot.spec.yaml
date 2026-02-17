@@ -14,7 +14,7 @@ stack:
   ui: react-19
   styling: tailwind-v4
   language: typescript
-  deploy: cloudflare-pages
+  deploy: vercel
   sdk: "@molroo-ai/sdk"
 
 persona:

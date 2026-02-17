@@ -259,5 +259,109 @@ jobs:
               --field spec="$SPEC" \
               --field phase="$NEXT_PHASE"
           else
-            echo "=== All phases completed! Factory pipeline done. ==="
+            echo "=== All phases completed! Triggering final deploy. ==="
+          fi
+
+      - name: Deploy to hosting platform
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.FACTORY_GH_PAT }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          SPEC="${{ inputs.spec }}"
+          TARGET_REPO="${{ steps.target.outputs.repo }}"
+
+          # Determine deploy platform from spec
+          PLATFORM=$(python3 -c "
+          import yaml
+          with open('${SPEC}') as f:
+              spec = yaml.safe_load(f)
+          deploy = spec.get('deploy', spec.get('stack', {}).get('deploy', 'none'))
+          if isinstance(deploy, dict):
+              print(deploy.get('platform', 'none'))
+          else:
+              print(deploy)
+          ")
+
+          echo "Deploy platform: ${PLATFORM}"
+
+          if [ "$PLATFORM" = "none" ] || [ -z "$PLATFORM" ]; then
+            echo "No deploy platform configured. Skipping."
+            exit 0
+          fi
+
+          # Pull latest main from target repo
+          cd /tmp/target-repo
+          git checkout main 2>/dev/null || true
+          git pull origin main 2>/dev/null || true
+
+          case "$PLATFORM" in
+            vercel)
+              if [ -z "$VERCEL_TOKEN" ]; then
+                echo "::warning::VERCEL_TOKEN not set. Skipping Vercel deploy."
+                exit 0
+              fi
+
+              # Copy vercel.json if not present
+              if [ ! -f vercel.json ]; then
+                cp "${{ github.workspace }}/templates/deploy/vercel/vercel.json" .
+                git add vercel.json
+                git commit -m "chore: add vercel.json for deployment" || true
+                git push origin main || true
+              fi
+
+              npm install -g vercel 2>/dev/null || true
+              DEPLOY_OUTPUT=$(vercel --prod --yes --token "$VERCEL_TOKEN" 2>&1) || true
+              DEPLOY_URL=$(echo "$DEPLOY_OUTPUT" | grep -oE 'https://[^ ]+' | tail -1)
+              echo "Deploy output: $DEPLOY_OUTPUT"
+              ;;
+
+            cloudflare-pages)
+              npm run build 2>/dev/null || true
+              DEPLOY_OUTPUT=$(npx wrangler pages deploy dist --project-name "$(basename $TARGET_REPO)" 2>&1) || true
+              DEPLOY_URL=$(echo "$DEPLOY_OUTPUT" | grep -oE 'https://[^ ]+' | tail -1)
+              ;;
+
+            github-pages)
+              mkdir -p .github/workflows
+              cp "${{ github.workspace }}/templates/deploy/github-pages/deploy.yml" .github/workflows/deploy.yml
+              git add .github/workflows/deploy.yml
+              git commit -m "chore: add GitHub Pages deploy workflow" || true
+              git push origin main || true
+              ORG=$(echo "$TARGET_REPO" | cut -d'/' -f1)
+              REPO=$(echo "$TARGET_REPO" | cut -d'/' -f2)
+              DEPLOY_URL="https://${ORG}.github.io/${REPO}"
+              ;;
+          esac
+
+          echo "DEPLOY_URL=${DEPLOY_URL}"
+
+          if [ -n "$DEPLOY_URL" ]; then
+            echo "=== Deployed: ${DEPLOY_URL} ==="
+
+            # Update progress with deploy URL
+            cd "${{ github.workspace }}"
+            SERVICE=$(python3 -c "
+            import yaml
+            with open('${SPEC}') as f:
+                spec = yaml.safe_load(f)
+            print(spec['service']['name'])
+            ")
+            PROGRESS_FILE="progress/${SERVICE}.progress.yaml"
+
+            python3 -c "
+          import yaml
+
+          with open('${PROGRESS_FILE}') as f:
+              progress = yaml.safe_load(f)
+
+          progress['deployUrl'] = '${DEPLOY_URL}'
+          progress['deployPlatform'] = '${PLATFORM}'
+
+          with open('${PROGRESS_FILE}', 'w') as f:
+              yaml.dump(progress, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+            "
+            git add "$PROGRESS_FILE"
+            git commit -m "chore(factory): update deploy URL — ${DEPLOY_URL}" || true
+            git push || true
           fi

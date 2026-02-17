@@ -150,6 +150,43 @@ gh workflow run factory-recover.yml -f spec="specs/pet-chatbot.spec.yaml" -f pha
 gh workflow run factory-lead.yml -f spec="specs/pet-chatbot.spec.yaml" -f phase="core"
 ```
 
+## Deployment
+
+Each service spec defines a `deploy` platform. The Integrator automatically deploys after every phase merge.
+
+### Supported Platforms
+
+| Platform | Spec Value | Template | Auto-deploy |
+|----------|-----------|----------|-------------|
+| Vercel | `deploy: vercel` | `templates/deploy/vercel/` | Every merge to main |
+| Cloudflare Pages | `deploy: cloudflare-pages` | `templates/deploy/cloudflare-pages/` | Every merge to main |
+| GitHub Pages | `deploy: github-pages` | `templates/deploy/github-pages/` | Via workflow on push |
+
+### Spec Format
+
+Simple (string):
+```yaml
+stack:
+  deploy: vercel
+```
+
+Extended (object, for future use):
+```yaml
+deploy:
+  platform: vercel
+  domain: pet-chatbot.molroo.io
+  env:
+    VITE_MOLROO_API_URL: https://api.molroo.io
+```
+
+### Deploy URL
+
+After deployment, the URL is saved in the progress file:
+```yaml
+deployUrl: https://pet-chatbot-xxx.vercel.app
+deployPlatform: vercel
+```
+
 ## Required Secrets
 
 | Secret | Purpose |
@@ -158,3 +195,4 @@ gh workflow run factory-lead.yml -f spec="specs/pet-chatbot.spec.yaml" -f phase=
 | `KIMI_CREDENTIALS` | Kimi OAuth credentials |
 | `KIMI_DEVICE_ID` | Kimi device identifier |
 | `FACTORY_GH_PAT` | GitHub PAT with `repo` + `workflow` scope for cross-repo ops |
+| `VERCEL_TOKEN` | Vercel deploy token (https://vercel.com/account/tokens) |
