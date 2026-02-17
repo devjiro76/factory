@@ -50,7 +50,7 @@ jobs:
       - name: Trigger Lead Agent
         if: steps.spec.outputs.skip != 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.FACTORY_GH_PAT }}
         run: |
           gh workflow run factory-lead.yml \
             --field spec="${{ steps.spec.outputs.path }}"

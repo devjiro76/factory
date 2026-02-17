@@ -109,3 +109,37 @@ jobs:
             --work-dir . \
             --agent-file agents/lead.yaml \
             --max-steps-per-turn 30
+
+      - name: Report Lead failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.FACTORY_GH_PAT }}
+        run: |
+          SPEC="${{ inputs.spec }}"
+          PHASE="${{ inputs.phase }}"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+          gh label create "factory:blocked" --color D93F0B --force 2>/dev/null || true
+          gh issue create \
+            --title "[factory:blocked] Lead failed — ${SPEC} phase '${PHASE:-auto}'" \
+            --label "factory:blocked" \
+            --body "## Lead Agent Failure
+
+          **Spec:** ${SPEC}
+          **Phase:** ${PHASE:-auto-detect}
+
+          The Lead agent failed to plan and dispatch worker tasks.
+
+          ### Possible causes
+          - Spec YAML syntax error
+          - Progress file missing or corrupt
+          - Target repo creation failed
+          - Kimi agent hit max-steps
+
+          ### Recovery
+          1. Review the [run log](${RUN_URL})
+          2. Fix the issue (spec, progress, etc.)
+          3. Re-trigger: \`gh workflow run factory-lead.yml --field spec=\"${SPEC}\" --field phase=\"${PHASE}\"\`
+
+          ---
+          *This issue was auto-created by the Factory pipeline.*"

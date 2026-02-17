@@ -147,8 +147,36 @@ jobs:
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
           if [ "${{ job.status }}" = "success" ]; then
+            # Verify PR was actually created
+            BRANCH=$(grep -iP '\*\*Branch\*?\*?:' /tmp/issue-body.txt | head -1 | grep -oP 'factory/[a-z0-9_-]+' | head -1)
+            PR_EXISTS=$(gh pr list --repo "$TARGET_REPO" --state open --head "$BRANCH" --json number -q '.[0].number' 2>/dev/null || echo "")
+
+            if [ -n "$PR_EXISTS" ]; then
+              gh issue comment "$ISSUE_NUM" \
+                --body "[factory:worker-report] Worker completed. PR #${PR_EXISTS} in ${TARGET_REPO}.
+          Run: ${RUN_URL}"
+            else
+              # Code may be pushed but PR wasn't created — create it now
+              echo "::warning::Worker succeeded but PR not found. Creating PR from branch '${BRANCH}'..."
+              ISSUE_TITLE=$(gh issue view "$ISSUE_NUM" --json title -q .title)
+              NEW_PR=$(gh pr create --repo "$TARGET_REPO" \
+                --title "[factory] ${ISSUE_TITLE}" \
+                --body "[factory:worker] Auto-created PR (worker hit step limit before PR creation)." \
+                --head "$BRANCH" --base main 2>/dev/null || echo "")
+
+              if [ -n "$NEW_PR" ]; then
+                gh issue comment "$ISSUE_NUM" \
+                  --body "[factory:worker-report] Worker completed. Auto-created PR in ${TARGET_REPO}.
+          Run: ${RUN_URL}"
+              else
+                gh issue comment "$ISSUE_NUM" \
+                  --body "[factory:worker-report] Worker **completed with warning**: code pushed to \`${BRANCH}\` but PR creation failed.
+          Run: ${RUN_URL}"
+              fi
+            fi
+          elif [ "${{ job.status }}" = "cancelled" ]; then
             gh issue comment "$ISSUE_NUM" \
-              --body "[factory:worker-report] Worker completed. Check ${TARGET_REPO} for PR.
+              --body "[factory:worker-report] Worker **cancelled**.
           Run: ${RUN_URL}"
           else
             gh issue comment "$ISSUE_NUM" \
@@ -246,6 +274,14 @@ jobs:
 
           if [ -z "$PRS" ]; then
             echo "::warning::No open factory PRs found in ${TARGET_REPO}"
+            exit 0
+          fi
+
+          # Guard: check if Integrator is already running/queued for this phase
+          RUNNING=$(gh run list --workflow factory-integrator.yml --status in_progress --json databaseId -q 'length')
+          QUEUED=$(gh run list --workflow factory-integrator.yml --status queued --json databaseId -q 'length')
+          if [ "${RUNNING:-0}" -gt 0 ] || [ "${QUEUED:-0}" -gt 0 ]; then
+            echo "Integrator already running or queued. Skipping duplicate trigger."
             exit 0
           fi
 
