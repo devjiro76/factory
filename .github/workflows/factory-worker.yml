@@ -1,0 +1,115 @@
+name: "Factory: Worker Agent"
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: factory-worker-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  worker:
+    if: github.event.label.name == 'factory:worker-task'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Kimi CLI
+        run: pip install kimi-cli
+
+      - name: Setup Kimi Subscription Auth
+        env:
+          KIMI_CONFIG: ${{ secrets.KIMI_CONFIG }}
+          KIMI_CREDENTIALS: ${{ secrets.KIMI_CREDENTIALS }}
+          KIMI_DEVICE_ID: ${{ secrets.KIMI_DEVICE_ID }}
+        run: |
+          mkdir -p ~/.kimi/credentials
+          echo "${KIMI_CONFIG}" > ~/.kimi/config.toml
+          echo "${KIMI_CREDENTIALS}" > ~/.kimi/credentials/kimi-code.json
+          echo "${KIMI_DEVICE_ID}" > ~/.kimi/device_id
+
+      - name: Read Issue Body
+        id: issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ISSUE_BODY=$(gh issue view ${{ github.event.issue.number }} --json body -q .body)
+          ISSUE_TITLE=$(gh issue view ${{ github.event.issue.number }} --json title -q .title)
+          echo "title=${ISSUE_TITLE}" >> "$GITHUB_OUTPUT"
+          echo "${ISSUE_BODY}" > /tmp/issue-body.txt
+
+      - name: Clone target repo
+        env:
+          GH_TOKEN: ${{ secrets.FACTORY_GH_PAT }}
+        run: |
+          # Extract target repo from issue body (line starting with "**Target repo**:")
+          TARGET_REPO=$(grep -oP '(?<=\*\*Target repo\*\*:\s).*' /tmp/issue-body.txt | tr -d '`' | head -1)
+          if [ -z "$TARGET_REPO" ]; then
+            echo "::error::Could not find target repo in issue body"
+            exit 1
+          fi
+          echo "TARGET_REPO=${TARGET_REPO}" >> "$GITHUB_ENV"
+          gh repo clone "${TARGET_REPO}" /tmp/target-repo
+          cd /tmp/target-repo
+          git config user.name "Factory Bot"
+          git config user.email "factory@molroo.io"
+
+      - name: Worker Agent — Implement Task
+        env:
+          GH_TOKEN: ${{ secrets.FACTORY_GH_PAT }}
+        run: |
+          ISSUE_BODY=$(cat /tmp/issue-body.txt)
+
+          kimi --print \
+            --prompt "You are a Factory Worker Agent. Task issue #${{ github.event.issue.number }}.
+
+          Issue title: ${{ steps.issue.outputs.title }}
+
+          Issue body:
+          ${ISSUE_BODY}
+
+          IMPORTANT: You are working in /tmp/target-repo which is the cloned target repo.
+          All file paths in the issue are relative to this repo root.
+
+          Instructions:
+          1. Read the issue body for file ownership, branch name, and requirements
+          2. Create the specified branch: git checkout -b <branch>
+          3. Implement ONLY the files listed in 'File Ownership'
+          4. If package.json exists, run 'npm install && npm run build'
+          5. git add and commit: 'feat: <task description>'
+          6. Push: git push origin <branch>
+          7. Create PR in the target repo: gh pr create --repo ${TARGET_REPO} ...
+
+          CRITICAL: Do NOT modify files outside your file ownership list.
+          Read CLAUDE.md in the factory repo (current directory) for SDK patterns." \
+            --yolo \
+            --work-dir /tmp/target-repo \
+            --agent-file ${{ github.workspace }}/agents/worker.yaml \
+            --max-steps-per-turn 20
+
+      - name: Report completion
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            gh issue comment ${{ github.event.issue.number }} \
+              --body "[factory:worker-report] Worker completed. Check ${TARGET_REPO} for PR."
+          else
+            gh issue comment ${{ github.event.issue.number }} \
+              --body "[factory:worker-report] Worker failed. Status: ${{ job.status }}"
+          fi

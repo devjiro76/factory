@@ -1,0 +1,107 @@
+# Pet Chatbot — Progress Tracker
+# Auto-updated by Lead and Integrator agents
+
+service: pet-chatbot
+repo: molroo-ai/pet-chatbot
+spec: specs/pet-chatbot.spec.yaml
+createdAt: "2026-02-17T00:00:00Z"
+
+phases:
+  scaffold:
+    status: pending
+    tasks:
+      scaffold-vite:
+        status: pending
+        issue: null
+        pr: null
+        branch: factory/scaffold-vite
+      scaffold-tailwind:
+        status: pending
+        issue: null
+        pr: null
+        branch: factory/scaffold-tailwind
+      scaffold-tooling:
+        status: pending
+        issue: null
+        pr: null
+        branch: factory/scaffold-tooling
+    integrationBranch: integrate/scaffold
+    integrationPR: null
+
+  core:
+    status: pending
+    tasks:
+      ui-chat-panel:
+        status: pending
+        issue: null
+        pr: null
+        branch: factory/ui-chat-panel
+      ui-layout:
+        status: pending
+        issue: null
+        pr: null
+        branch: factory/ui-layout
+      ui-pet-avatar:
+        status: pending
+        issue: null
+        pr: null
+        branch: factory/ui-pet-avatar
+      sdk-client:
+        status: pending
+        issue: null
+        pr: null
+        branch: factory/sdk-client
+      sdk-chat-hook:
+        status: pending
+        issue: null
+        pr: null
+        branch: factory/sdk-chat-hook
+      sdk-world-setup:
+        status: pending
+        issue: null
+        pr: null
+        branch: factory/sdk-world-setup
+    integrationBranch: integrate/core
+    integrationPR: null
+
+  emotion-viz:
+    status: pending
+    tasks:
+      viz-emotion-map:
+        status: pending
+        issue: null
+        pr: null
+        branch: factory/viz-emotion-map
+      viz-emotion-display:
+        status: pending
+        issue: null
+        pr: null
+        branch: factory/viz-emotion-display
+      viz-integration:
+        status: pending
+        issue: null
+        pr: null
+        branch: factory/viz-integration
+    integrationBranch: integrate/emotion-viz
+    integrationPR: null
+
+  polish:
+    status: pending
+    tasks:
+      polish-error:
+        status: pending
+        issue: null
+        pr: null
+        branch: factory/polish-error
+      polish-responsive:
+        status: pending
+        issue: null
+        pr: null
+        branch: factory/polish-responsive
+      polish-deploy:
+        status: pending
+        issue: null
+        pr: null
+        branch: factory/polish-deploy
+    integrationBranch: integrate/polish
+    integrationPR: null

@@ -1,0 +1,93 @@
+name: "Factory: Lead Agent"
+
+on:
+  workflow_dispatch:
+    inputs:
+      spec:
+        description: "Path to service spec YAML"
+        required: true
+        type: string
+      phase:
+        description: "Specific phase to execute (optional)"
+        required: false
+        type: string
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: write
+
+jobs:
+  lead:
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.comment.body, '[factory:worker-report]')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Kimi CLI
+        run: pip install kimi-cli
+
+      - name: Setup Kimi Subscription Auth
+        env:
+          KIMI_CONFIG: ${{ secrets.KIMI_CONFIG }}
+          KIMI_CREDENTIALS: ${{ secrets.KIMI_CREDENTIALS }}
+          KIMI_DEVICE_ID: ${{ secrets.KIMI_DEVICE_ID }}
+        run: |
+          mkdir -p ~/.kimi/credentials
+          echo "${KIMI_CONFIG}" > ~/.kimi/config.toml
+          echo "${KIMI_CREDENTIALS}" > ~/.kimi/credentials/kimi-code.json
+          echo "${KIMI_DEVICE_ID}" > ~/.kimi/device_id
+
+      - name: Lead Agent — Plan & Dispatch
+        env:
+          GH_TOKEN: ${{ secrets.FACTORY_GH_PAT }}
+        run: |
+          SPEC_PATH="${{ inputs.spec }}"
+          PHASE_ARG=""
+          if [ -n "${{ inputs.phase }}" ]; then
+            PHASE_ARG="Focus on phase: ${{ inputs.phase }}."
+          fi
+
+          kimi --print \
+            --prompt "You are the Factory Lead Agent. Your task:
+
+          1. Read the service spec at '${SPEC_PATH}'
+          2. Read the progress YAML in 'progress/' (derive filename from spec service name)
+          3. Determine the next phase to execute (check dependsOn, find first pending phase)
+          ${PHASE_ARG}
+
+          4. Read 'service.repo' from the spec (e.g. 'molroo-ai/pet-chatbot')
+          5. Create the target repo if it doesn't exist:
+               gh repo create <repo> --private --description '<service description>'
+             Then initialize it with an empty commit:
+               git clone https://github.com/<repo>.git /tmp/target-repo
+               cd /tmp/target-repo && git commit --allow-empty -m 'feat: init' && git push
+          6. For each task in the phase, create a GitHub Issue IN THIS REPO (not target) with label 'factory:worker-task'
+             Use 'gh label create factory:worker-task --color FF6B35 --force' first.
+             Each issue body must specify:
+               - Target repo (from spec)
+               - File ownership list (paths relative to target repo root)
+               - Branch name
+               - Implementation requirements
+               - Reference: read factory/CLAUDE.md for SDK patterns
+          7. Update progress YAML: set phase status to 'in_progress', each task to 'dispatched' with issue number
+          8. Commit and push the progress update to this repo" \
+            --yolo \
+            --work-dir . \
+            --agent-file agents/lead.yaml \
+            --max-steps-per-turn 30

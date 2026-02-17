@@ -1,0 +1,100 @@
+name: "Factory: Integrator"
+
+on:
+  workflow_dispatch:
+    inputs:
+      spec:
+        description: "Path to service spec YAML"
+        required: true
+        type: string
+      phase:
+        description: "Phase ID to integrate"
+        required: true
+        type: string
+      prs:
+        description: "Comma-separated PR numbers (in target repo)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: write
+
+jobs:
+  integrate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Kimi CLI
+        run: pip install kimi-cli
+
+      - name: Setup Kimi Subscription Auth
+        env:
+          KIMI_CONFIG: ${{ secrets.KIMI_CONFIG }}
+          KIMI_CREDENTIALS: ${{ secrets.KIMI_CREDENTIALS }}
+          KIMI_DEVICE_ID: ${{ secrets.KIMI_DEVICE_ID }}
+        run: |
+          mkdir -p ~/.kimi/credentials
+          echo "${KIMI_CONFIG}" > ~/.kimi/config.toml
+          echo "${KIMI_CREDENTIALS}" > ~/.kimi/credentials/kimi-code.json
+          echo "${KIMI_DEVICE_ID}" > ~/.kimi/device_id
+
+      - name: Read target repo from spec
+        id: target
+        run: |
+          TARGET_REPO=$(grep 'repo:' ${{ inputs.spec }} | head -1 | awk '{print $2}')
+          echo "repo=${TARGET_REPO}" >> "$GITHUB_OUTPUT"
+
+      - name: Clone target repo
+        env:
+          GH_TOKEN: ${{ secrets.FACTORY_GH_PAT }}
+        run: |
+          gh repo clone ${{ steps.target.outputs.repo }} /tmp/target-repo
+          cd /tmp/target-repo
+          git config user.name "Factory Bot"
+          git config user.email "factory@molroo.io"
+
+      - name: Integrator — Merge & Verify
+        env:
+          GH_TOKEN: ${{ secrets.FACTORY_GH_PAT }}
+        run: |
+          kimi --print \
+            --prompt "You are the Factory Integrator Agent.
+
+          Target repo: ${{ steps.target.outputs.repo }} (cloned at /tmp/target-repo)
+          Factory repo: current directory (has specs, progress)
+          Phase: ${{ inputs.phase }}
+          Worker PRs to merge: ${{ inputs.prs }}
+
+          Instructions:
+          1. Work in /tmp/target-repo for merge operations
+          2. Create integration branch: integrate/${{ inputs.phase }}
+          3. For each PR number in '${{ inputs.prs }}':
+             - Get branch: gh pr view <num> --repo ${{ steps.target.outputs.repo }} --json headRefName -q .headRefName
+             - git fetch origin && git merge --no-ff origin/<branch>
+             - Resolve conflicts if any
+          4. Run: npm install && npm run build (if package.json exists)
+          5. Fix build issues if needed
+          6. Push integration branch to target repo
+          7. Create integration PR in target repo
+
+          Then update progress in the FACTORY repo (current directory):
+          8. Update progress/<service>.progress.yaml: phase status → completed
+          9. Commit and push progress update
+          10. If there's a next phase, trigger:
+              gh workflow run factory-lead.yml --field spec='${{ inputs.spec }}' --field phase=<next>" \
+            --yolo \
+            --work-dir /tmp/target-repo \
+            --agent-file ${{ github.workspace }}/agents/integrator.yaml \
+            --max-steps-per-turn 25

@@ -1,0 +1,9 @@
+version: 1
+agent:
+  name: factory-worker
+  extend: default
+  system_prompt_path: ../CLAUDE.md
+  system_prompt_args:
+    role: worker
+  exclude_tools:
+    - "kimi_cli.tools.web:SearchWeb"
