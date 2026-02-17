@@ -2,6 +2,8 @@ service: pet-chatbot
 repo: molroo-ai/pet-chatbot
 spec: specs/pet-chatbot.spec.yaml
 createdAt: '2026-02-17T00:00:00Z'
+deployUrl: https://pet-chatbot-deploy.vercel.app
+deployPlatform: vercel
 phases:
   scaffold:
     status: completed
