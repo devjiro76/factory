@@ -56,8 +56,12 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.FACTORY_GH_PAT }}
         run: |
-          # Extract target repo from issue body (line starting with "**Target repo**:")
-          TARGET_REPO=$(grep -oP '(?<=\*\*Target repo\*\*:\s).*' /tmp/issue-body.txt | tr -d '`' | head -1)
+          # Extract target repo from issue body (case-insensitive, flexible format)
+          TARGET_REPO=$(grep -iP '\*\*Target\s+Repo\*?\*?:?\*?\*?\s*' /tmp/issue-body.txt | grep -oP 'molroo-ai/[a-z0-9_-]+' | head -1)
+          if [ -z "$TARGET_REPO" ]; then
+            # Fallback: find any molroo-ai/<name> pattern in the body
+            TARGET_REPO=$(grep -oP 'molroo-ai/[a-z0-9_-]+' /tmp/issue-body.txt | head -1)
+          fi
           if [ -z "$TARGET_REPO" ]; then
             echo "::error::Could not find target repo in issue body"
             exit 1
