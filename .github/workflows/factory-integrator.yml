@@ -102,6 +102,42 @@ jobs:
             --agent-file ${{ github.workspace }}/agents/integrator.yaml \
             --max-steps-per-turn 35
 
+      - name: Merge integration PR & close worker PRs
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.FACTORY_GH_PAT }}
+        run: |
+          TARGET_REPO="${{ steps.target.outputs.repo }}"
+          PHASE="${{ inputs.phase }}"
+          WORKER_PRS="${{ inputs.prs }}"
+
+          echo "=== Finding integration PR for phase '${PHASE}' ==="
+          INTEGRATION_PR=$(gh pr list --repo "$TARGET_REPO" --state open --head "integrate/${PHASE}" --json number -q '.[0].number')
+
+          if [ -n "$INTEGRATION_PR" ]; then
+            echo "Merging integration PR #${INTEGRATION_PR} into main..."
+            gh pr merge "$INTEGRATION_PR" --repo "$TARGET_REPO" --merge --delete-branch \
+              --body "[factory:integrator] Phase '${PHASE}' integration merged automatically."
+            echo "Integration PR #${INTEGRATION_PR} merged successfully."
+          else
+            echo "::warning::No open integration PR found for branch 'integrate/${PHASE}'"
+          fi
+
+          # Close worker PRs (superseded by integration merge)
+          echo "=== Closing worker PRs: ${WORKER_PRS} ==="
+          IFS=',' read -ra PR_ARRAY <<< "$WORKER_PRS"
+          for PR_NUM in "${PR_ARRAY[@]}"; do
+            PR_NUM=$(echo "$PR_NUM" | tr -d ' ')
+            PR_STATE=$(gh pr view "$PR_NUM" --repo "$TARGET_REPO" --json state -q .state 2>/dev/null || echo "UNKNOWN")
+            if [ "$PR_STATE" = "OPEN" ]; then
+              gh pr close "$PR_NUM" --repo "$TARGET_REPO" --delete-branch \
+                --comment "[factory:integrator] Superseded by integration PR #${INTEGRATION_PR}. Changes included in phase '${PHASE}' merge."
+              echo "Closed worker PR #${PR_NUM}"
+            else
+              echo "Worker PR #${PR_NUM} already ${PR_STATE}, skipping."
+            fi
+          done
+
       - name: Update progress & trigger next phase
         if: success()
         env:
