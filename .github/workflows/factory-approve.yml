@@ -183,6 +183,8 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.FACTORY_GH_PAT }}
+          trigger_phrase: "factory:approved"
+          label_trigger: "factory:approved"
           prompt: |
             You are the Factory Lead Agent. Your task is to dispatch workers for this approved service spec.
 
