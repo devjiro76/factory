@@ -38,6 +38,13 @@ jobs:
       - name: Install Claude Code CLI
         run: npm install -g @anthropic-ai/claude-code
 
+      - name: React to comment (read receipt)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions \
+            -f content=eyes --silent
+
       - name: Check for APPROVE command
         id: check
         env:
@@ -61,9 +68,12 @@ jobs:
       - name: Handle APPROVE
         if: steps.check.outputs.action == 'approve'
         env:
-          GH_TOKEN: ${{ secrets.FACTORY_GH_PAT }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           ISSUE_NUM=${{ github.event.issue.number }}
+          # React with rocket to APPROVE comment
+          gh api repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions \
+            -f content=rocket --silent
           gh issue edit "$ISSUE_NUM" --remove-label "factory:ready"
           gh issue edit "$ISSUE_NUM" --add-label "factory:approved"
           gh issue comment "$ISSUE_NUM" \
@@ -127,7 +137,7 @@ jobs:
             EXTRA_INSTRUCTIONS="This is a DECISION sub-issue. The human has answered a question that was blocking a worker. Summarize the decision and close this sub-issue by stating the resolution clearly."
           fi
 
-          RESPONSE=$(claude -p "You are the Factory Bot continuing a conversation.
+          claude -p "You are the Factory Bot continuing a conversation.
 
           Request type: ${REQUEST_TYPE}
           Bot turns so far: ${BOT_TURNS}
@@ -143,7 +153,15 @@ jobs:
           Generate ONLY the next comment body. Start with '<!-- factory:bot -->' on the first line." \
             --output-format text \
             --max-turns 5 \
-            --dangerously-skip-permissions)
+            --dangerously-skip-permissions > /tmp/bot-response.txt
+
+      - name: Post conversation response
+        if: steps.check.outputs.action == 'converse'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ISSUE_NUM=${{ github.event.issue.number }}
+          RESPONSE=$(cat /tmp/bot-response.txt)
 
           gh issue comment "$ISSUE_NUM" --body "$RESPONSE"
 
@@ -155,7 +173,7 @@ jobs:
       - name: Handle decision sub-issue resolution
         if: steps.check.outputs.action == 'converse' && steps.history.outputs.is_decision == 'true'
         env:
-          GH_TOKEN: ${{ secrets.FACTORY_GH_PAT }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           ISSUE_NUM=${{ github.event.issue.number }}
           ISSUE_BODY=$(gh issue view "$ISSUE_NUM" --json body -q .body)

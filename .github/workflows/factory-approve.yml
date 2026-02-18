@@ -98,6 +98,7 @@ jobs:
           echo "service_type=${SERVICE_TYPE}" >> "$GITHUB_OUTPUT"
 
           SPEC_PATH="specs/${SERVICE_NAME}.spec.yaml"
+          mkdir -p specs
           echo "$SPEC_YAML" > "$SPEC_PATH"
           echo "spec_path=${SPEC_PATH}" >> "$GITHUB_OUTPUT"
 
@@ -109,6 +110,7 @@ jobs:
           SERVICE_NAME="${{ steps.extract.outputs.service_name }}"
           SPEC_PATH="${{ steps.extract.outputs.spec_path }}"
           PROGRESS_FILE="progress/${SERVICE_NAME}.progress.yaml"
+          mkdir -p progress
 
           python3 -c "
           import yaml
@@ -153,7 +155,7 @@ jobs:
 
       - name: Post progress checklist
         env:
-          GH_TOKEN: ${{ secrets.FACTORY_GH_PAT }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           ISSUE_NUM=${{ github.event.issue.number }}
           SPEC_PATH="${{ steps.extract.outputs.spec_path }}"
@@ -250,7 +252,7 @@ jobs:
 
       - name: Transition to executing
         env:
-          GH_TOKEN: ${{ secrets.FACTORY_GH_PAT }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           ISSUE_NUM=${{ github.event.issue.number }}
           gh issue edit "$ISSUE_NUM" --remove-label "factory:approved" 2>/dev/null || true
@@ -259,7 +261,7 @@ jobs:
       - name: Report approve failure
         if: failure()
         env:
-          GH_TOKEN: ${{ secrets.FACTORY_GH_PAT }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           ISSUE_NUM=${{ github.event.issue.number }}
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

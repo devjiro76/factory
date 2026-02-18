@@ -26,6 +26,13 @@ jobs:
       - name: Install Claude Code CLI
         run: npm install -g @anthropic-ai/claude-code
 
+      - name: React to issue (read receipt)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/reactions \
+            -f content=eyes --silent
+
       - name: Detect request type
         id: parse
         env:
@@ -74,6 +81,7 @@ jobs:
           echo "CODEBASE_EOF" >> "$GITHUB_ENV"
 
       - name: Run triage analysis
+        id: triage
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GH_TOKEN: ${{ secrets.FACTORY_GH_PAT }}
@@ -107,15 +115,23 @@ jobs:
             --max-turns 5 \
             --dangerously-skip-permissions)
 
-          gh issue comment "$ISSUE_NUM" --body "$RESPONSE"
+          echo "response<<RESPONSE_EOF" >> "$GITHUB_OUTPUT"
+          echo "$RESPONSE" >> "$GITHUB_OUTPUT"
+          echo "RESPONSE_EOF" >> "$GITHUB_OUTPUT"
 
+      - name: Post triage comment and update labels
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ISSUE_NUM=${{ github.event.issue.number }}
+          gh issue comment "$ISSUE_NUM" --body "${{ steps.triage.outputs.response }}"
           gh issue edit "$ISSUE_NUM" --remove-label "factory:triage"
           gh issue edit "$ISSUE_NUM" --add-label "factory:refining"
 
       - name: Report triage failure
         if: failure()
         env:
-          GH_TOKEN: ${{ secrets.FACTORY_GH_PAT }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           ISSUE_NUM=${{ github.event.issue.number }}
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
