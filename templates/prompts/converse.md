@@ -112,7 +112,7 @@ phases:
 
 ## Deploy Platform
 
-Always include `stack.deploy` in the spec. If the user doesn't mention it, ask or default to `vercel`.
+Always include `stack.deploy` in the spec. **Use EXACTLY the value the user specified in the issue.** If the user wrote "vercel", use `vercel` (NOT `cloudflare-pages`). If they didn't specify, default to `vercel`.
 Valid options: `vercel`, `cloudflare-pages`, `github-pages`, `none`.
 
 ## When Asking Follow-up Questions
