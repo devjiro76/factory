@@ -232,10 +232,9 @@ jobs:
           [factory:worker-report] Worker completed with warning: PR creation failed.
           [Run log](${RUN_URL})"
             fi
-            # React with rocket and close
+            # React with rocket (close happens after phase completion check)
             gh api repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/reactions \
               -f content=rocket --silent
-            gh issue close "$ISSUE_NUM"
 
           elif [ "${{ job.status }}" = "cancelled" ]; then
             gh issue comment "$ISSUE_NUM" \
@@ -380,3 +379,10 @@ jobs:
             --field prs="$PRS"
 
           echo "Integrator triggered for phase=${PHASE}, prs=${PRS}"
+
+      - name: Close worker issue
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue close "${{ github.event.issue.number }}"
