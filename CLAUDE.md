@@ -1,6 +1,6 @@
 # Service Factory
 
-Issue-driven conversational pipeline for automated service generation using Claude Code CLI + GitHub Actions.
+Issue-driven conversational pipeline for automated service generation using [Claude Code Action](https://github.com/anthropics/claude-code-action) + GitHub Actions.
 Supports both new service creation and existing service improvements.
 
 ## Repository Model
@@ -35,21 +35,38 @@ Issue Created ──> Triage Bot ──> Conversation (refine spec)
 ### Pipeline Flow
 
 1. **Issue created** → `factory:triage` label (via template)
-2. **Triage** (`factory-triage.yml`) → Bot analyzes, asks questions → `factory:refining`
-3. **Conversation** (`factory-converse.yml`) → Bot refines spec via dialogue → generates YAML → `factory:ready`
+2. **Triage** (`factory-triage.yml`, `claude-code-action@v1`) → Bot analyzes, asks questions → `factory:refining`
+3. **Conversation** (`factory-converse.yml`, `claude-code-action@v1`) → Bot refines spec via dialogue → generates YAML → `factory:ready`
+   - Also triggered by `@factory` mentions in any issue comment
 4. **Approve** → Human comments "APPROVE" → `factory:approved` → `factory-approve.yml`
-5. **Execute** → Spec extracted, workers dispatched → `factory:executing`
-6. **Workers** (`factory-worker.yml`) → Implement tasks, create PRs in target repo
-7. **Integrator** (`factory-integrator.yml`) → Merge PRs, deploy, trigger next phase
+5. **Execute** → Spec extracted, progress checklist posted, workers dispatched → `factory:executing`
+6. **Workers** (`factory-worker.yml`, Claude Code CLI) → Implement tasks, create PRs in target repo
+7. **Integrator** (`factory-integrator.yml`, Claude Code CLI) → Merge PRs, deploy, update progress checklist, trigger next phase
 8. **Complete** → All phases done → `factory:completed`, parent issue closed
 
 ### Anti-Loop Strategy (5-Layer)
 
 1. **Comment marker**: Bot comments start with `<!-- factory:bot -->` → workflow checks
 2. **Author check**: `github.event.comment.user.login != 'github-actions[bot]'`
-3. **Label guard**: Only `factory:refining` / `factory:decision` issues trigger conversation
+3. **Label guard**: `factory:refining` / `factory:decision` issues OR `@factory` mention
 4. **Concurrency group**: Per-issue `factory-converse-{issue_num}`
 5. **Turn limit**: Prompt enforces 2-4 turns to spec convergence
+
+### Engine Selection
+
+| Workflow | Engine | Why |
+|----------|--------|-----|
+| Triage, Converse, Approve (Lead) | `claude-code-action@v1` | Issue context auto-reading, comment auto-posting, OAuth subscription auth |
+| Worker, Integrator, Recover | Claude Code CLI | Target repo context, multi-step pipeline, direct bash execution |
+
+### Progress Tracking
+
+A `<!-- factory:progress -->` comment is posted on the parent issue when the pipeline starts:
+```markdown
+- [x] **setup** — Project scaffolding (3 tasks)
+- [ ] **core** — Core functionality (4 tasks) ← In progress
+```
+The integrator updates this checklist dynamically as phases complete.
 
 ## Conventions
 
@@ -128,9 +145,9 @@ Transition: `triage -> refining <-> (conversation) -> ready -> approved -> execu
 
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
-| `factory-triage.yml` | `issues: [opened]` + `factory:triage` | Analyze issue, ask initial questions |
-| `factory-converse.yml` | `issue_comment: [created]` + anti-loop guards | Continue conversation, detect APPROVE |
-| `factory-approve.yml` | `issues: [labeled]` + `factory:approved` | Extract spec, dispatch workers |
+| `factory-triage.yml` | `issues: [opened]` + `factory:triage` | Analyze issue, ask initial questions (`claude-code-action`) |
+| `factory-converse.yml` | `issue_comment: [created]` + anti-loop / `@factory` | Continue conversation, detect APPROVE (`claude-code-action`) |
+| `factory-approve.yml` | `issues: [labeled]` + `factory:approved` | Extract spec, dispatch workers (`claude-code-action` for Lead) |
 | `factory-worker.yml` | `issues: [labeled]` + `factory:worker-task` or `factory:retry` | Implement task, create PR |
 | `factory-integrator.yml` | `workflow_dispatch` | Merge PRs, deploy, trigger next phase |
 | `factory-recover.yml` | `workflow_dispatch` | Recovery: retry-phase, retry-integration, skip-phase |
@@ -139,7 +156,7 @@ Transition: `triage -> refining <-> (conversation) -> ready -> approved -> execu
 
 | What | Where |
 |------|-------|
-| Overall progress | Parent issue comments + `progress/<service>.progress.yaml` |
+| Overall progress | Parent issue progress checklist (`<!-- factory:progress -->`) + `progress/<service>.progress.yaml` |
 | Active workers | Issues tab -> filter `factory:worker-task` `is:open` |
 | Blocked tasks | Issues tab -> filter `factory:blocked` |
 | Decisions needed | Issues tab -> filter `factory:decision` |
@@ -251,6 +268,6 @@ deployPlatform: vercel
 
 | Secret | Purpose |
 |--------|---------|
-| `CLAUDE_CODE_OAUTH_TOKEN` | Claude Code OAuth token via `claude setup-token` (subscription auth) |
+| `CLAUDE_CODE_OAUTH_TOKEN` | Claude Code OAuth token via `claude setup-token` (subscription auth, used by both action and CLI) |
 | `FACTORY_GH_PAT` | GitHub PAT with `repo` + `workflow` scope for cross-repo ops |
 | `VERCEL_TOKEN` | Vercel deploy token (https://vercel.com/account/tokens) |

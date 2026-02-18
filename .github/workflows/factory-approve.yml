@@ -24,18 +24,12 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.FACTORY_GH_PAT }}
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: |
-          npm install -g @anthropic-ai/claude-code
-          pip install pyyaml
+        run: pip install pyyaml
 
       - name: Extract spec from conversation
         id: extract
@@ -44,19 +38,9 @@ jobs:
         run: |
           ISSUE_NUM=${{ github.event.issue.number }}
 
-          # Get all comments and find the spec YAML
           COMMENTS=$(gh issue view "$ISSUE_NUM" --json comments -q '.comments[].body')
-          ISSUE_BODY=$(gh issue view "$ISSUE_NUM" --json body -q .body)
 
-          # Find the comment containing <!-- factory:spec --> and extract YAML
-          # Look through comments in reverse order (latest first)
-          SPEC_YAML=""
-          while IFS= read -r line; do
-            if [ -n "$SPEC_YAML" ]; then
-              break
-            fi
-            # Try to extract YAML block after factory:spec marker
-            SPEC_YAML=$(echo "$COMMENTS" | python3 -c "
+          SPEC_YAML=$(echo "$COMMENTS" | python3 -c "
           import sys, re
 
           content = sys.stdin.read()
@@ -64,24 +48,19 @@ jobs:
           # Find the last occurrence of factory:spec marker
           parts = content.split('<!-- factory:spec -->')
           if len(parts) < 2:
-              # Try finding YAML in code blocks as fallback
               blocks = re.findall(r'\`\`\`ya?ml\n(.*?)\`\`\`', content, re.DOTALL)
               if blocks:
-                  # Find the block that looks like a service spec
                   for block in reversed(blocks):
                       if 'service:' in block and 'phases:' in block:
                           print(block)
                           break
               sys.exit(0)
 
-          # Get content after the last marker
           after_marker = parts[-1]
-          # Extract YAML from code block
           match = re.search(r'\`\`\`ya?ml\n(.*?)\`\`\`', after_marker, re.DOTALL)
           if match:
               print(match.group(1))
           else:
-              # Try raw YAML (no code block)
               lines = after_marker.strip().split('\n')
               yaml_lines = []
               for line in lines:
@@ -90,7 +69,6 @@ jobs:
               if yaml_lines:
                   print('\n'.join(yaml_lines))
           " 2>/dev/null || echo "")
-          done <<< "once"
 
           if [ -z "$SPEC_YAML" ]; then
             echo "::error::Could not extract spec YAML from conversation"
@@ -100,7 +78,6 @@ jobs:
             exit 1
           fi
 
-          # Determine service name and type
           SERVICE_NAME=$(echo "$SPEC_YAML" | python3 -c "
           import sys, yaml
           spec = yaml.safe_load(sys.stdin.read())
@@ -115,7 +92,6 @@ jobs:
           echo "service_name=${SERVICE_NAME}" >> "$GITHUB_OUTPUT"
           echo "service_type=${SERVICE_TYPE}" >> "$GITHUB_OUTPUT"
 
-          # Save spec to file
           SPEC_PATH="specs/${SERVICE_NAME}.spec.yaml"
           echo "$SPEC_YAML" > "$SPEC_PATH"
           echo "spec_path=${SPEC_PATH}" >> "$GITHUB_OUTPUT"
@@ -170,73 +146,94 @@ jobs:
           git commit -m "chore(factory): spec from #${{ github.event.issue.number }} — ${{ steps.extract.outputs.service_name }}" || echo "No changes to commit"
           git push
 
-      - name: Lead logic — plan and dispatch workers
+      - name: Post progress checklist
         env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GH_TOKEN: ${{ secrets.FACTORY_GH_PAT }}
         run: |
+          ISSUE_NUM=${{ github.event.issue.number }}
           SPEC_PATH="${{ steps.extract.outputs.spec_path }}"
-          SERVICE_TYPE="${{ steps.extract.outputs.service_type }}"
-          PARENT_ISSUE=${{ github.event.issue.number }}
 
-          claude -p "You are the Factory Lead Agent. Your task:
+          # Build phase checklist from spec
+          CHECKLIST=$(python3 -c "
+          import yaml
 
-          1. Read the service spec at '${SPEC_PATH}'
-          2. Read the progress YAML at '${{ steps.progress.outputs.progress_file }}'
-          3. Determine the next phase to execute (check dependsOn, find first pending phase)
+          with open('${SPEC_PATH}') as f:
+              spec = yaml.safe_load(f)
 
-          4. Read 'service.repo' from the spec (e.g. 'owner/my-service')
-          5. If this is a NEW service (type != 'improvement'):
-             - Create the target repo if it doesn't exist:
-               gh repo create <repo> --private --description '<service description>'
-             - Then initialize it with an empty commit:
-               git clone https://github.com/<repo>.git /tmp/target-repo
-               cd /tmp/target-repo && git commit --allow-empty -m 'feat: init' && git push
-          6. If this is an IMPROVEMENT (type == 'improvement'):
-             - The target repo already exists. Do NOT create it.
+          lines = []
+          for phase_id, phase in spec.get('phases', {}).items():
+              desc = phase.get('description', phase_id)
+              tasks = phase.get('tasks', [])
+              task_count = len(tasks)
+              lines.append(f'- [ ] **{phase_id}** — {desc} ({task_count} tasks)')
+          print('\n'.join(lines))
+          ")
 
-          7. For each task in the phase, create a GitHub Issue IN THIS REPO with label 'factory:worker-task'
-             Use 'gh label create factory:worker-task --color FF6B35 --force' first.
+          gh issue comment "$ISSUE_NUM" --body "<!-- factory:bot --><!-- factory:progress -->
+          ## Pipeline Progress
 
-             CRITICAL: Each issue body MUST follow this EXACT format:
-             ---
-             ## Factory Worker Task: <task-id>
+          ${CHECKLIST}
 
-             **Target Repo:** <repo from spec>
-             **Phase:** <phase-id>
-             **Spec:** ${SPEC_PATH}
-             **Branch:** factory/<task-id>
-             **Parent Issue:** #${PARENT_ISSUE}
-             **Task Type:** <CREATE or MODIFY>
+          _Updated automatically as phases complete._"
 
-             ### File Ownership
-             <list of files>
+      - name: Lead logic — plan and dispatch workers
+        uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ secrets.FACTORY_GH_PAT }}
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          github_token: ${{ secrets.FACTORY_GH_PAT }}
+          prompt: |
+            You are the Factory Lead Agent. Your task is to dispatch workers for this approved service spec.
 
-             ### Requirements
-             <requirements from spec>
+            1. Read the service spec at '${{ steps.extract.outputs.spec_path }}'
+            2. Read the progress YAML at '${{ steps.progress.outputs.progress_file }}'
+            3. Determine the next phase to execute (check dependsOn, find first pending phase)
 
-             ### Reference
-             Read factory/CLAUDE.md for SDK patterns and tech stack requirements.
+            4. Read 'service.repo' from the spec (e.g. 'owner/my-service')
+            5. If this is a NEW service (type != 'improvement'):
+               - Create the target repo if it doesn't exist:
+                 gh repo create <repo> --private --description '<service description>'
+               - Then initialize it with an empty commit:
+                 git clone https://github.com/<repo>.git /tmp/target-repo
+                 cd /tmp/target-repo && git commit --allow-empty -m 'feat: init' && git push
+            6. If this is an IMPROVEMENT (type == 'improvement'):
+               - The target repo already exists. Do NOT create it.
 
-             ---
-             *This is a factory-generated task. Report completion with [factory:worker-report] in a comment.*
-             ---
+            7. For each task in the phase, create a GitHub Issue IN THIS REPO with label 'factory:worker-task'
+               Use 'gh label create factory:worker-task --color FF6B35 --force' first.
 
-             The **Phase:**, **Spec:**, and **Parent Issue:** fields are CRITICAL for automation.
+               CRITICAL: Each issue body MUST follow this EXACT format:
+               ---
+               ## Factory Worker Task: <task-id>
 
-          8. Update progress YAML: set phase status to 'in_progress', each task to 'dispatched' with issue number
-          9. Commit and push the progress update to this repo
-          10. Post a summary comment on the parent issue #${PARENT_ISSUE}:
-              gh issue comment ${PARENT_ISSUE} --body '<summary of dispatched tasks>'" \
-            --output-format text \
-            --max-turns 30 \
-            --dangerously-skip-permissions
+               **Target Repo:** <repo from spec>
+               **Phase:** <phase-id>
+               **Spec:** ${{ steps.extract.outputs.spec_path }}
+               **Branch:** factory/<task-id>
+               **Parent Issue:** #${{ github.event.issue.number }}
+               **Task Type:** <CREATE or MODIFY>
 
-          CLAUDE_EXIT=$?
-          if [ $CLAUDE_EXIT -ne 0 ]; then
-            echo "::error::Claude Code exited with code $CLAUDE_EXIT"
-            exit 1
-          fi
+               ### File Ownership
+               <list of files>
+
+               ### Requirements
+               <requirements from spec>
+
+               ### Reference
+               Read factory/CLAUDE.md for SDK patterns and tech stack requirements.
+
+               ---
+               *This is a factory-generated task. Report completion with [factory:worker-report] in a comment.*
+               ---
+
+               The **Phase:**, **Spec:**, and **Parent Issue:** fields are CRITICAL for automation.
+
+            8. Update progress YAML: set phase status to 'in_progress', each task to 'dispatched' with issue number
+            9. Commit and push the progress update to this repo
+            10. Post a summary of the dispatched tasks (the action will handle commenting)
+
+            IMPORTANT: Use 'git config user.name "Factory Bot"' and 'git config user.email "factory@molroo.io"' before any commits.
 
       - name: Transition to executing
         env:

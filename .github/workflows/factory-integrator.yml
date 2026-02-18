@@ -164,6 +164,75 @@ jobs:
           Recovery options available — check the blocked issue for details." 2>/dev/null || true
           fi
 
+      - name: Update progress checklist on parent issue
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.FACTORY_GH_PAT }}
+        run: |
+          PHASE="${{ inputs.phase }}"
+          SPEC="${{ inputs.spec }}"
+          SERVICE="${{ steps.target.outputs.service }}"
+          PARENT_ISSUE="${{ steps.target.outputs.parent_issue }}"
+
+          if [ -z "$PARENT_ISSUE" ]; then
+            echo "No parent issue to update."
+            exit 0
+          fi
+
+          PROGRESS_FILE="progress/${SERVICE}.progress.yaml"
+
+          # Build updated checklist from spec + progress
+          CHECKLIST=$(python3 -c "
+          import yaml
+
+          with open('${SPEC}') as f:
+              spec = yaml.safe_load(f)
+
+          progress_data = {}
+          try:
+              with open('${PROGRESS_FILE}') as f:
+                  progress_data = yaml.safe_load(f) or {}
+          except:
+              pass
+
+          lines = []
+          for phase_id, phase_spec in spec.get('phases', {}).items():
+              desc = phase_spec.get('description', phase_id)
+              tasks = phase_spec.get('tasks', [])
+              task_count = len(tasks)
+              phase_progress = progress_data.get('phases', {}).get(phase_id, {})
+              status = phase_progress.get('status', 'pending')
+
+              if status == 'completed':
+                  lines.append(f'- [x] **{phase_id}** — {desc} ({task_count} tasks)')
+              elif status == 'in_progress':
+                  lines.append(f'- [ ] **{phase_id}** — {desc} ({task_count} tasks) \u2190 In progress')
+              else:
+                  lines.append(f'- [ ] **{phase_id}** — {desc} ({task_count} tasks)')
+
+          print('\n'.join(lines))
+          ")
+
+          # Find existing progress comment and update it
+          COMMENT_ID=$(gh api "repos/${{ github.repository }}/issues/${PARENT_ISSUE}/comments" \
+            --jq '.[] | select(.body | contains("<!-- factory:progress -->")) | .id' | tail -1)
+
+          BODY="<!-- factory:bot --><!-- factory:progress -->
+          ## Pipeline Progress
+
+          ${CHECKLIST}
+
+          _Updated automatically as phases complete._"
+
+          if [ -n "$COMMENT_ID" ]; then
+            gh api "repos/${{ github.repository }}/issues/comments/${COMMENT_ID}" \
+              -X PATCH -f body="${BODY}"
+            echo "Updated existing progress comment #${COMMENT_ID}"
+          else
+            gh issue comment "$PARENT_ISSUE" --body "${BODY}"
+            echo "Created new progress comment"
+          fi
+
       - name: Merge integration PR & close worker PRs
         if: success()
         env:
@@ -251,12 +320,7 @@ jobs:
           git commit -m "chore(factory): mark ${PHASE} phase completed" || echo "No changes to commit"
           git push || echo "Push failed, may need rebase"
 
-          # Notify parent issue about phase completion
-          if [ -n "$PARENT_ISSUE" ]; then
-            gh issue comment "$PARENT_ISSUE" \
-              --body "<!-- factory:bot -->
-          Phase **${PHASE}** completed and merged into main." 2>/dev/null || true
-          fi
+          # Phase completion is reflected in the progress checklist update step
 
           # Determine next phase
           NEXT_PHASE=$(python3 -c "
