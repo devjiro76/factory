@@ -7,7 +7,6 @@ on:
 permissions:
   contents: read
   issues: write
-  pull-requests: write
 
 concurrency:
   group: factory-triage-${{ github.event.issue.number }}
@@ -19,6 +18,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
 
       - name: Detect request type
         id: parse
@@ -68,33 +74,43 @@ jobs:
           echo "CODEBASE_EOF" >> "$GITHUB_ENV"
 
       - name: Run triage analysis
-        uses: anthropics/claude-code-action@v1
-        with:
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          github_token: ${{ secrets.FACTORY_GH_PAT }}
-          trigger_phrase: "factory:triage"
-          label_trigger: "factory:triage"
-          prompt: |
-            You are the Factory Bot performing initial triage on this issue.
-            Request type: ${{ steps.parse.outputs.type }}
-
-            Read the appropriate prompt template for guidance:
-            - New service: templates/prompts/triage-new.md
-            - Improvement: templates/prompts/triage-improvement.md
-
-            Codebase analysis (for improvements):
-            ${{ env.CODEBASE_SUMMARY }}
-
-            IMPORTANT: Start your response with '<!-- factory:bot -->' on the first line.
-            Ask 2-4 focused questions to clarify the spec. Be concise and friendly.
-          claude_args: "--allowedTools Read"
-
-      - name: Transition labels
         env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GH_TOKEN: ${{ secrets.FACTORY_GH_PAT }}
         run: |
-          gh issue edit "${{ github.event.issue.number }}" --remove-label "factory:triage"
-          gh issue edit "${{ github.event.issue.number }}" --add-label "factory:refining"
+          ISSUE_NUM=${{ github.event.issue.number }}
+          ISSUE_BODY=$(gh issue view "$ISSUE_NUM" --json body -q .body)
+          REQUEST_TYPE="${{ steps.parse.outputs.type }}"
+          CODEBASE_INFO="${CODEBASE_SUMMARY:-N/A}"
+
+          if [ "$REQUEST_TYPE" = "improvement" ]; then
+            PROMPT_TEMPLATE=$(cat templates/prompts/triage-improvement.md)
+          else
+            PROMPT_TEMPLATE=$(cat templates/prompts/triage-new.md)
+          fi
+
+          RESPONSE=$(claude -p "You are the Factory Bot. Analyze this issue and generate the first triage comment.
+
+          Request type: ${REQUEST_TYPE}
+          Issue body:
+          ${ISSUE_BODY}
+
+          Codebase analysis (for improvements):
+          ${CODEBASE_INFO}
+
+          Prompt template for reference:
+          ${PROMPT_TEMPLATE}
+
+          Generate ONLY the comment body. Start with '<!-- factory:bot -->' on the first line.
+          Ask 2-4 focused questions to clarify the spec. Be concise and friendly." \
+            --output-format text \
+            --max-turns 5 \
+            --dangerously-skip-permissions)
+
+          gh issue comment "$ISSUE_NUM" --body "$RESPONSE"
+
+          gh issue edit "$ISSUE_NUM" --remove-label "factory:triage"
+          gh issue edit "$ISSUE_NUM" --add-label "factory:refining"
 
       - name: Report triage failure
         if: failure()

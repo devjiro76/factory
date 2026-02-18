@@ -1,6 +1,6 @@
 # Factory
 
-**Issue-driven service generation pipeline powered by [Claude Code Action](https://github.com/anthropics/claude-code-action) + GitHub Actions.**
+**Issue-driven service generation pipeline powered by Claude Code + GitHub Actions.**
 
 Create or modify full-stack web services through GitHub Issues. Describe what you want, refine the spec through conversation, approve, and watch it build itself.
 
@@ -96,15 +96,15 @@ You can also mention `@factory` in any comment to invoke the bot directly.
 
 ### Workflows
 
-| Workflow | Trigger | Engine | Role |
-|----------|---------|--------|------|
-| `factory-triage` | Issue opened | `claude-code-action@v1` | Analyze request, ask initial questions |
-| `factory-converse` | Comment / `@factory` | `claude-code-action@v1` | Refine spec through dialogue |
-| `factory-approve` | `factory:approved` label | `claude-code-action@v1` | Extract spec, dispatch workers |
-| `factory-worker` | `factory:worker-task` label | Claude Code CLI | Implement code, create PR |
-| `factory-integrator` | Workflow dispatch | Claude Code CLI | Merge PRs, deploy, next phase |
-| `factory-recover` | Workflow dispatch | Claude Code CLI | Retry/skip failed phases |
-| `factory-stale` | Weekly cron | — | Nudge inactive issues |
+| Workflow | Trigger | Role |
+|----------|---------|------|
+| `factory-triage` | Issue opened | Analyze request, ask initial questions |
+| `factory-converse` | Comment / `@factory` | Refine spec through dialogue |
+| `factory-approve` | `factory:approved` label | Extract spec, dispatch workers |
+| `factory-worker` | `factory:worker-task` label | Implement code, create PR |
+| `factory-integrator` | Workflow dispatch | Merge PRs, deploy, next phase |
+| `factory-recover` | Workflow dispatch | Retry/skip failed phases |
+| `factory-stale` | Weekly cron | Nudge inactive issues |
 
 ### Label State Machine
 
@@ -207,8 +207,9 @@ Edit `templates/prompts/` to customize:
 
 ## Requirements
 
-- [Claude Code](https://docs.anthropic.com/en/docs/claude-code) with active subscription (OAuth token)
+- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) with active subscription
 - GitHub account with Actions enabled
+- Node.js 20+ (used in workflows)
 
 ## License
 
