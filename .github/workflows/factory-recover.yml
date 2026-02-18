@@ -35,28 +35,64 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.FACTORY_GH_PAT }}
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: "Recovery: retry-phase"
-        if: inputs.action == 'retry-phase'
-        env:
-          GH_TOKEN: ${{ secrets.FACTORY_GH_PAT }}
+      - name: Install dependencies
         run: |
-          PHASE="${{ inputs.phase }}"
+          npm install -g @anthropic-ai/claude-code
+          pip install pyyaml
+
+      - name: Read service info
+        id: info
+        run: |
           SPEC="${{ inputs.spec }}"
-
-          echo "=== Retrying phase '${PHASE}' from scratch ==="
-
-          # Reset phase progress to pending
           SERVICE=$(python3 -c "
           import yaml
           with open('${SPEC}') as f:
               spec = yaml.safe_load(f)
           print(spec['service']['name'])
           ")
+          echo "service=${SERVICE}" >> "$GITHUB_OUTPUT"
+
           PROGRESS_FILE="progress/${SERVICE}.progress.yaml"
+          echo "progress_file=${PROGRESS_FILE}" >> "$GITHUB_OUTPUT"
+
+          # Read parent issue
+          PARENT_ISSUE=""
+          if [ -f "$PROGRESS_FILE" ]; then
+            PARENT_ISSUE=$(python3 -c "
+          import yaml
+          with open('${PROGRESS_FILE}') as f:
+              p = yaml.safe_load(f)
+          print(p.get('parentIssue', ''))
+          " 2>/dev/null || echo "")
+          fi
+          echo "parent_issue=${PARENT_ISSUE}" >> "$GITHUB_OUTPUT"
+
+          # Read target repo
+          TARGET_REPO=$(grep 'repo:' "$SPEC" | head -1 | awk '{print $2}')
+          echo "target_repo=${TARGET_REPO}" >> "$GITHUB_OUTPUT"
+
+      - name: "Recovery: retry-phase"
+        if: inputs.action == 'retry-phase'
+        env:
+          GH_TOKEN: ${{ secrets.FACTORY_GH_PAT }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          PHASE="${{ inputs.phase }}"
+          SPEC="${{ inputs.spec }}"
+          SERVICE="${{ steps.info.outputs.service }}"
+          PROGRESS_FILE="${{ steps.info.outputs.progress_file }}"
+          PARENT_ISSUE="${{ steps.info.outputs.parent_issue }}"
+          TARGET_REPO="${{ steps.info.outputs.target_repo }}"
+
+          echo "=== Retrying phase '${PHASE}' from scratch ==="
 
           python3 -c "
           import yaml
@@ -103,11 +139,46 @@ jobs:
           git commit -m "chore(factory): reset ${PHASE} phase for retry" || echo "No changes"
           git push
 
-          # Re-trigger Lead for this phase
-          echo "=== Triggering Lead for phase: ${PHASE} ==="
-          gh workflow run factory-lead.yml \
-            --field spec="$SPEC" \
-            --field phase="$PHASE"
+          # Re-dispatch workers for this phase using inline Lead logic
+          echo "=== Dispatching workers for phase: ${PHASE} ==="
+          claude -p "You are the Factory Lead Agent. Your task:
+
+          1. Read the service spec at '${SPEC}'
+          2. Read the progress YAML at '${PROGRESS_FILE}'
+          3. Focus on phase: ${PHASE}
+
+          4. For each task in the phase, create a GitHub Issue IN THIS REPO with label 'factory:worker-task'
+             Use 'gh label create factory:worker-task --color FF6B35 --force' first.
+
+             Each issue body MUST follow this format:
+             ---
+             ## Factory Worker Task: <task-id>
+
+             **Target Repo:** ${TARGET_REPO}
+             **Phase:** ${PHASE}
+             **Spec:** ${SPEC}
+             **Branch:** factory/<task-id>
+             **Parent Issue:** #${PARENT_ISSUE}
+             **Task Type:** <CREATE or MODIFY>
+
+             ### File Ownership
+             <list of files>
+
+             ### Requirements
+             <requirements from spec>
+
+             ### Reference
+             Read factory/CLAUDE.md for SDK patterns and tech stack requirements.
+
+             ---
+             *This is a factory-generated task.*
+             ---
+
+          5. Update progress YAML: set phase status to 'in_progress', each task to 'dispatched' with issue number
+          6. Commit and push the progress update" \
+            --output-format text \
+            --max-turns 25 \
+            --dangerously-skip-permissions || echo "::warning::Phase dispatch failed"
 
       - name: "Recovery: retry-integration"
         if: inputs.action == 'retry-integration'
@@ -116,11 +187,9 @@ jobs:
         run: |
           PHASE="${{ inputs.phase }}"
           SPEC="${{ inputs.spec }}"
+          TARGET_REPO="${{ steps.info.outputs.target_repo }}"
 
           echo "=== Retrying integration for phase '${PHASE}' ==="
-
-          # Read target repo from spec
-          TARGET_REPO=$(grep 'repo:' "$SPEC" | head -1 | awk '{print $2}')
 
           # Collect open factory PRs
           PRS=$(gh pr list --repo "$TARGET_REPO" --state open --json number,title -q '.[] | select(.title | startswith("[factory]")) | .number' | tr '\n' ',' | sed 's/,$//')
@@ -159,19 +228,16 @@ jobs:
         if: inputs.action == 'skip-phase'
         env:
           GH_TOKEN: ${{ secrets.FACTORY_GH_PAT }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
         run: |
           PHASE="${{ inputs.phase }}"
           SPEC="${{ inputs.spec }}"
+          SERVICE="${{ steps.info.outputs.service }}"
+          PROGRESS_FILE="${{ steps.info.outputs.progress_file }}"
+          PARENT_ISSUE="${{ steps.info.outputs.parent_issue }}"
+          TARGET_REPO="${{ steps.info.outputs.target_repo }}"
 
           echo "=== Skipping phase '${PHASE}' ==="
-
-          SERVICE=$(python3 -c "
-          import yaml
-          with open('${SPEC}') as f:
-              spec = yaml.safe_load(f)
-          print(spec['service']['name'])
-          ")
-          PROGRESS_FILE="progress/${SERVICE}.progress.yaml"
 
           # Mark phase as completed (skipped)
           python3 -c "
@@ -239,10 +305,53 @@ jobs:
           ")
 
           if [ -n "$NEXT_PHASE" ]; then
-            echo "=== Triggering Lead for next phase: ${NEXT_PHASE} ==="
-            gh workflow run factory-lead.yml \
-              --field spec="$SPEC" \
-              --field phase="$NEXT_PHASE"
+            echo "=== Dispatching workers for next phase: ${NEXT_PHASE} ==="
+            claude -p "You are the Factory Lead Agent. Your task:
+
+            1. Read the service spec at '${SPEC}'
+            2. Read the progress YAML at '${PROGRESS_FILE}'
+            3. Focus on phase: ${NEXT_PHASE}
+
+            4. For each task in the phase, create a GitHub Issue IN THIS REPO with label 'factory:worker-task'
+               Use 'gh label create factory:worker-task --color FF6B35 --force' first.
+
+               Each issue body MUST follow this format:
+               ---
+               ## Factory Worker Task: <task-id>
+
+               **Target Repo:** ${TARGET_REPO}
+               **Phase:** ${NEXT_PHASE}
+               **Spec:** ${SPEC}
+               **Branch:** factory/<task-id>
+               **Parent Issue:** #${PARENT_ISSUE}
+               **Task Type:** <CREATE or MODIFY>
+
+               ### File Ownership
+               <list of files>
+
+               ### Requirements
+               <requirements from spec>
+
+               ### Reference
+               Read factory/CLAUDE.md for SDK patterns and tech stack requirements.
+
+               ---
+               *This is a factory-generated task.*
+               ---
+
+            5. Update progress YAML: set phase status to 'in_progress', each task to 'dispatched' with issue number
+            6. Commit and push the progress update" \
+              --output-format text \
+              --max-turns 25 \
+              --dangerously-skip-permissions || echo "::warning::Next phase dispatch failed"
           else
             echo "=== All phases completed! ==="
+
+            # Mark parent issue as completed
+            if [ -n "$PARENT_ISSUE" ]; then
+              gh label create "factory:completed" --color 0E8A16 --force 2>/dev/null || true
+              gh issue edit "$PARENT_ISSUE" --remove-label "factory:executing" 2>/dev/null || true
+              gh issue edit "$PARENT_ISSUE" --add-label "factory:completed"
+              gh issue close "$PARENT_ISSUE" 2>/dev/null || true
+            fi
           fi

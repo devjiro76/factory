@@ -1,0 +1,66 @@
+name: "Factory: Stale Check"
+
+on:
+  schedule:
+    - cron: "0 9 * * 1"  # Every Monday at 9:00 UTC
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+jobs:
+  stale-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for stale factory issues
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "=== Checking for stale factory issues ==="
+
+          # Find issues with factory:refining that haven't been updated in 7 days
+          STALE_REFINING=$(gh issue list \
+            --label "factory:refining" \
+            --state open \
+            --json number,title,updatedAt \
+            -q '.[] | select((.updatedAt | fromdateiso8601) < (now - 604800)) | .number')
+
+          for ISSUE_NUM in $STALE_REFINING; do
+            echo "Stale refining issue: #${ISSUE_NUM}"
+            gh issue comment "$ISSUE_NUM" \
+              --body "<!-- factory:bot -->
+          This issue has been inactive for 7 days. If you'd like to continue, please reply with your answers.
+
+          If this request is no longer needed, you can close this issue."
+          done
+
+          # Find issues with factory:ready that haven't been approved in 7 days
+          STALE_READY=$(gh issue list \
+            --label "factory:ready" \
+            --state open \
+            --json number,title,updatedAt \
+            -q '.[] | select((.updatedAt | fromdateiso8601) < (now - 604800)) | .number')
+
+          for ISSUE_NUM in $STALE_READY; do
+            echo "Stale ready issue: #${ISSUE_NUM}"
+            gh issue comment "$ISSUE_NUM" \
+              --body "<!-- factory:bot -->
+          The spec has been ready for approval for 7 days. Comment **APPROVE** to start the pipeline, or close this issue if no longer needed."
+          done
+
+          # Find issues with factory:decision that haven't been answered in 3 days
+          STALE_DECISION=$(gh issue list \
+            --label "factory:decision" \
+            --state open \
+            --json number,title,updatedAt \
+            -q '.[] | select((.updatedAt | fromdateiso8601) < (now - 259200)) | .number')
+
+          for ISSUE_NUM in $STALE_DECISION; do
+            echo "Stale decision issue: #${ISSUE_NUM}"
+            gh issue comment "$ISSUE_NUM" \
+              --body "<!-- factory:bot -->
+          This decision has been pending for 3+ days and is blocking the pipeline. Please respond to unblock progress."
+          done
+
+          TOTAL=$(($(echo "$STALE_REFINING" | wc -w) + $(echo "$STALE_READY" | wc -w) + $(echo "$STALE_DECISION" | wc -w)))
+          echo "=== Total stale issues found: ${TOTAL} ==="

@@ -1,0 +1,263 @@
+name: "Factory: Approve & Execute"
+
+on:
+  issues:
+    types: [labeled]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: write
+
+concurrency:
+  group: factory-approve-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  approve:
+    if: github.event.label.name == 'factory:approved'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.FACTORY_GH_PAT }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          pip install pyyaml
+
+      - name: Extract spec from conversation
+        id: extract
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ISSUE_NUM=${{ github.event.issue.number }}
+
+          # Get all comments and find the spec YAML
+          COMMENTS=$(gh issue view "$ISSUE_NUM" --json comments -q '.comments[].body')
+          ISSUE_BODY=$(gh issue view "$ISSUE_NUM" --json body -q .body)
+
+          # Find the comment containing <!-- factory:spec --> and extract YAML
+          # Look through comments in reverse order (latest first)
+          SPEC_YAML=""
+          while IFS= read -r line; do
+            if [ -n "$SPEC_YAML" ]; then
+              break
+            fi
+            # Try to extract YAML block after factory:spec marker
+            SPEC_YAML=$(echo "$COMMENTS" | python3 -c "
+          import sys, re
+
+          content = sys.stdin.read()
+
+          # Find the last occurrence of factory:spec marker
+          parts = content.split('<!-- factory:spec -->')
+          if len(parts) < 2:
+              # Try finding YAML in code blocks as fallback
+              blocks = re.findall(r'\`\`\`ya?ml\n(.*?)\`\`\`', content, re.DOTALL)
+              if blocks:
+                  # Find the block that looks like a service spec
+                  for block in reversed(blocks):
+                      if 'service:' in block and 'phases:' in block:
+                          print(block)
+                          break
+              sys.exit(0)
+
+          # Get content after the last marker
+          after_marker = parts[-1]
+          # Extract YAML from code block
+          match = re.search(r'\`\`\`ya?ml\n(.*?)\`\`\`', after_marker, re.DOTALL)
+          if match:
+              print(match.group(1))
+          else:
+              # Try raw YAML (no code block)
+              lines = after_marker.strip().split('\n')
+              yaml_lines = []
+              for line in lines:
+                  if line.strip().startswith('service:') or yaml_lines:
+                      yaml_lines.append(line)
+              if yaml_lines:
+                  print('\n'.join(yaml_lines))
+          " 2>/dev/null || echo "")
+          done <<< "once"
+
+          if [ -z "$SPEC_YAML" ]; then
+            echo "::error::Could not extract spec YAML from conversation"
+            gh issue comment "$ISSUE_NUM" \
+              --body "<!-- factory:bot -->
+          Could not find a valid spec YAML in the conversation. Please ensure the spec was generated with the \`<!-- factory:spec -->\` marker."
+            exit 1
+          fi
+
+          # Determine service name and type
+          SERVICE_NAME=$(echo "$SPEC_YAML" | python3 -c "
+          import sys, yaml
+          spec = yaml.safe_load(sys.stdin.read())
+          print(spec.get('service', {}).get('name', 'unknown'))
+          ")
+          SERVICE_TYPE=$(echo "$SPEC_YAML" | python3 -c "
+          import sys, yaml
+          spec = yaml.safe_load(sys.stdin.read())
+          print(spec.get('service', {}).get('type', 'new'))
+          ")
+
+          echo "service_name=${SERVICE_NAME}" >> "$GITHUB_OUTPUT"
+          echo "service_type=${SERVICE_TYPE}" >> "$GITHUB_OUTPUT"
+
+          # Save spec to file
+          SPEC_PATH="specs/${SERVICE_NAME}.spec.yaml"
+          echo "$SPEC_YAML" > "$SPEC_PATH"
+          echo "spec_path=${SPEC_PATH}" >> "$GITHUB_OUTPUT"
+
+          echo "Extracted spec for ${SERVICE_NAME} (type: ${SERVICE_TYPE})"
+
+      - name: Create/update progress file
+        id: progress
+        run: |
+          SERVICE_NAME="${{ steps.extract.outputs.service_name }}"
+          SPEC_PATH="${{ steps.extract.outputs.spec_path }}"
+          PROGRESS_FILE="progress/${SERVICE_NAME}.progress.yaml"
+
+          python3 -c "
+          import yaml
+          from datetime import datetime
+
+          with open('${SPEC_PATH}') as f:
+              spec = yaml.safe_load(f)
+
+          progress = {
+              'service': spec.get('service', {}).get('name'),
+              'repo': spec.get('service', {}).get('repo'),
+              'type': spec.get('service', {}).get('type', 'new'),
+              'parentIssue': ${{ github.event.issue.number }},
+              'startedAt': datetime.utcnow().isoformat() + 'Z',
+              'phases': {}
+          }
+
+          for phase_id, phase in spec.get('phases', {}).items():
+              progress['phases'][phase_id] = {
+                  'status': 'pending',
+                  'tasks': {}
+              }
+              for task in phase.get('tasks', []):
+                  if isinstance(task, dict):
+                      progress['phases'][phase_id]['tasks'][task.get('id', 'unknown')] = {
+                          'status': 'pending'
+                      }
+
+          with open('${PROGRESS_FILE}', 'w') as f:
+              yaml.dump(progress, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+          "
+
+          echo "progress_file=${PROGRESS_FILE}" >> "$GITHUB_OUTPUT"
+
+      - name: Commit spec and progress
+        run: |
+          git config user.name "Factory Bot"
+          git config user.email "factory@molroo.io"
+          git add specs/ progress/
+          git commit -m "chore(factory): spec from #${{ github.event.issue.number }} — ${{ steps.extract.outputs.service_name }}" || echo "No changes to commit"
+          git push
+
+      - name: Lead logic — plan and dispatch workers
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          GH_TOKEN: ${{ secrets.FACTORY_GH_PAT }}
+        run: |
+          SPEC_PATH="${{ steps.extract.outputs.spec_path }}"
+          SERVICE_TYPE="${{ steps.extract.outputs.service_type }}"
+          PARENT_ISSUE=${{ github.event.issue.number }}
+
+          claude -p "You are the Factory Lead Agent. Your task:
+
+          1. Read the service spec at '${SPEC_PATH}'
+          2. Read the progress YAML at '${{ steps.progress.outputs.progress_file }}'
+          3. Determine the next phase to execute (check dependsOn, find first pending phase)
+
+          4. Read 'service.repo' from the spec (e.g. 'owner/my-service')
+          5. If this is a NEW service (type != 'improvement'):
+             - Create the target repo if it doesn't exist:
+               gh repo create <repo> --private --description '<service description>'
+             - Then initialize it with an empty commit:
+               git clone https://github.com/<repo>.git /tmp/target-repo
+               cd /tmp/target-repo && git commit --allow-empty -m 'feat: init' && git push
+          6. If this is an IMPROVEMENT (type == 'improvement'):
+             - The target repo already exists. Do NOT create it.
+
+          7. For each task in the phase, create a GitHub Issue IN THIS REPO with label 'factory:worker-task'
+             Use 'gh label create factory:worker-task --color FF6B35 --force' first.
+
+             CRITICAL: Each issue body MUST follow this EXACT format:
+             ---
+             ## Factory Worker Task: <task-id>
+
+             **Target Repo:** <repo from spec>
+             **Phase:** <phase-id>
+             **Spec:** ${SPEC_PATH}
+             **Branch:** factory/<task-id>
+             **Parent Issue:** #${PARENT_ISSUE}
+             **Task Type:** <CREATE or MODIFY>
+
+             ### File Ownership
+             <list of files>
+
+             ### Requirements
+             <requirements from spec>
+
+             ### Reference
+             Read factory/CLAUDE.md for SDK patterns and tech stack requirements.
+
+             ---
+             *This is a factory-generated task. Report completion with [factory:worker-report] in a comment.*
+             ---
+
+             The **Phase:**, **Spec:**, and **Parent Issue:** fields are CRITICAL for automation.
+
+          8. Update progress YAML: set phase status to 'in_progress', each task to 'dispatched' with issue number
+          9. Commit and push the progress update to this repo
+          10. Post a summary comment on the parent issue #${PARENT_ISSUE}:
+              gh issue comment ${PARENT_ISSUE} --body '<summary of dispatched tasks>'" \
+            --output-format text \
+            --max-turns 30 \
+            --dangerously-skip-permissions
+
+          CLAUDE_EXIT=$?
+          if [ $CLAUDE_EXIT -ne 0 ]; then
+            echo "::error::Claude Code exited with code $CLAUDE_EXIT"
+            exit 1
+          fi
+
+      - name: Transition to executing
+        env:
+          GH_TOKEN: ${{ secrets.FACTORY_GH_PAT }}
+        run: |
+          ISSUE_NUM=${{ github.event.issue.number }}
+          gh issue edit "$ISSUE_NUM" --remove-label "factory:approved" 2>/dev/null || true
+          gh issue edit "$ISSUE_NUM" --add-label "factory:executing"
+
+      - name: Report approve failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.FACTORY_GH_PAT }}
+        run: |
+          ISSUE_NUM=${{ github.event.issue.number }}
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          gh issue comment "$ISSUE_NUM" \
+            --body "<!-- factory:bot -->
+          Pipeline startup failed. Check the [workflow run](${RUN_URL}) for details.
+
+          You can retry by removing and re-adding the \`factory:approved\` label."
+
+          gh issue edit "$ISSUE_NUM" --remove-label "factory:approved" 2>/dev/null || true
+          gh issue edit "$ISSUE_NUM" --add-label "factory:blocked"

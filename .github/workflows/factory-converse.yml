@@ -1,0 +1,185 @@
+name: "Factory: Conversation"
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: factory-converse-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  converse:
+    # Anti-loop guards (5-layer):
+    # 1. Not a bot comment (author check)
+    # 2. Issue has factory:refining or factory:ready label
+    # 3. Comment body doesn't start with bot marker (redundant safety)
+    if: >-
+      github.event.comment.user.login != 'github-actions[bot]' &&
+      !startsWith(github.event.comment.body, '<!-- factory:bot -->') &&
+      (
+        contains(github.event.issue.labels.*.name, 'factory:refining') ||
+        contains(github.event.issue.labels.*.name, 'factory:ready') ||
+        contains(github.event.issue.labels.*.name, 'factory:decision')
+      )
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Check for APPROVE command
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          COMMENT_BODY="${{ github.event.comment.body }}"
+          ISSUE_NUM=${{ github.event.issue.number }}
+
+          # Check if this is an approval
+          if echo "$COMMENT_BODY" | grep -qiP '^\s*APPROVE\s*$'; then
+            LABELS=$(gh issue view "$ISSUE_NUM" --json labels -q '.labels[].name' | tr '\n' ',')
+            if echo "$LABELS" | grep -q "factory:ready"; then
+              echo "action=approve" >> "$GITHUB_OUTPUT"
+            else
+              echo "action=converse" >> "$GITHUB_OUTPUT"
+              echo "Spec not ready yet. Treating as regular comment."
+            fi
+          else
+            echo "action=converse" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Handle APPROVE
+        if: steps.check.outputs.action == 'approve'
+        env:
+          GH_TOKEN: ${{ secrets.FACTORY_GH_PAT }}
+        run: |
+          ISSUE_NUM=${{ github.event.issue.number }}
+          gh issue edit "$ISSUE_NUM" --remove-label "factory:ready"
+          gh issue edit "$ISSUE_NUM" --add-label "factory:approved"
+          gh issue comment "$ISSUE_NUM" \
+            --body "<!-- factory:bot -->
+          Approved! Starting the Factory pipeline now. I'll update this issue with progress."
+
+      - name: Collect conversation history
+        if: steps.check.outputs.action == 'converse'
+        id: history
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ISSUE_NUM=${{ github.event.issue.number }}
+
+          # Get issue body + all comments
+          ISSUE_BODY=$(gh issue view "$ISSUE_NUM" --json body -q .body)
+          COMMENTS=$(gh issue view "$ISSUE_NUM" --json comments -q '.comments[] | "---\n**" + .author.login + "** (" + .createdAt + "):\n" + .body' 2>/dev/null || echo "")
+          LABELS=$(gh issue view "$ISSUE_NUM" --json labels -q '.labels[].name' | tr '\n' ',')
+
+          # Detect request type
+          if echo "$LABELS" | grep -q "type:improvement"; then
+            echo "type=improvement" >> "$GITHUB_OUTPUT"
+          else
+            echo "type=new-service" >> "$GITHUB_OUTPUT"
+          fi
+
+          # Check if this is a decision sub-issue response
+          if echo "$LABELS" | grep -q "factory:decision"; then
+            echo "is_decision=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_decision=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          # Count bot turns
+          BOT_TURNS=$(echo "$COMMENTS" | grep -c '<!-- factory:bot -->' || echo "0")
+          echo "bot_turns=${BOT_TURNS}" >> "$GITHUB_OUTPUT"
+
+          # Save full history
+          {
+            echo "## Original Request"
+            echo "$ISSUE_BODY"
+            echo ""
+            echo "## Conversation"
+            echo "$COMMENTS"
+          } > /tmp/conversation-history.txt
+
+      - name: Continue conversation
+        if: steps.check.outputs.action == 'converse'
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          GH_TOKEN: ${{ secrets.FACTORY_GH_PAT }}
+        run: |
+          ISSUE_NUM=${{ github.event.issue.number }}
+          REQUEST_TYPE="${{ steps.history.outputs.type }}"
+          BOT_TURNS="${{ steps.history.outputs.bot_turns }}"
+          IS_DECISION="${{ steps.history.outputs.is_decision }}"
+          CONVERSATION=$(cat /tmp/conversation-history.txt)
+          CONVERSE_PROMPT=$(cat templates/prompts/converse.md)
+
+          EXTRA_INSTRUCTIONS=""
+          if [ "$BOT_TURNS" -ge 3 ]; then
+            EXTRA_INSTRUCTIONS="IMPORTANT: You have already asked questions ${BOT_TURNS} times. You MUST generate the spec YAML now, using reasonable defaults for any remaining unknowns. Do not ask more questions."
+          fi
+
+          if [ "$IS_DECISION" = "true" ]; then
+            EXTRA_INSTRUCTIONS="This is a DECISION sub-issue. The human has answered a question that was blocking a worker. Summarize the decision and close this sub-issue by stating the resolution clearly."
+          fi
+
+          RESPONSE=$(claude -p "You are the Factory Bot continuing a conversation.
+
+          Request type: ${REQUEST_TYPE}
+          Bot turns so far: ${BOT_TURNS}
+
+          Conversation prompt template:
+          ${CONVERSE_PROMPT}
+
+          Full conversation history:
+          ${CONVERSATION}
+
+          ${EXTRA_INSTRUCTIONS}
+
+          Generate ONLY the next comment body. Start with '<!-- factory:bot -->' on the first line." \
+            --output-format text \
+            --max-turns 5 \
+            --dangerously-skip-permissions)
+
+          # Post the response
+          gh issue comment "$ISSUE_NUM" --body "$RESPONSE"
+
+          # Check if spec was generated (look for factory:spec marker)
+          if echo "$RESPONSE" | grep -q '<!-- factory:spec -->'; then
+            # Add factory:ready label
+            gh issue edit "$ISSUE_NUM" --add-label "factory:ready"
+            echo "Spec generated! Issue marked as ready for approval."
+          fi
+
+      - name: Handle decision sub-issue resolution
+        if: steps.check.outputs.action == 'converse' && steps.history.outputs.is_decision == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.FACTORY_GH_PAT }}
+        run: |
+          ISSUE_NUM=${{ github.event.issue.number }}
+          ISSUE_BODY=$(gh issue view "$ISSUE_NUM" --json body -q .body)
+
+          # Extract parent issue number from body
+          PARENT_NUM=$(echo "$ISSUE_BODY" | grep -oP 'Parent:\s*#(\d+)' | grep -oP '\d+' | head -1)
+
+          if [ -n "$PARENT_NUM" ]; then
+            gh issue comment "$PARENT_NUM" \
+              --body "<!-- factory:bot -->
+          Decision resolved in #${ISSUE_NUM}. Resuming pipeline."
+
+            # Remove blocked label from parent if present
+            gh issue edit "$PARENT_NUM" --remove-label "factory:blocked" 2>/dev/null || true
+          fi
+
+          # Close the decision sub-issue
+          gh issue close "$ISSUE_NUM" --comment "<!-- factory:bot -->
+          Decision recorded. Closing sub-issue."

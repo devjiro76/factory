@@ -1,0 +1,53 @@
+name: "Service Improvement"
+description: "Request improvements or changes to an existing service"
+labels: ["factory:triage", "type:improvement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## Service Improvement Request
+        Describe the changes you want. The Factory bot will analyze the existing codebase and help plan the implementation.
+
+  - type: input
+    id: target-repo
+    attributes:
+      label: Target Repository
+      description: "The repo to modify (e.g., owner/repo-name)"
+      placeholder: "owner/my-service"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: change-type
+    attributes:
+      label: Type of Change
+      description: "What kind of improvement is this?"
+      options:
+        - New Feature
+        - Bug Fix
+        - UI/UX Improvement
+        - Performance Optimization
+        - Refactoring
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What should change?
+      description: "Describe the desired changes. The bot will read the existing code and ask clarifying questions."
+      placeholder: |
+        Example: Add a dark mode toggle to the settings page.
+        The current theme is light-only and users have requested dark mode support.
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional-context
+    attributes:
+      label: Additional Context
+      description: "Screenshots, error logs, related issues, or design references?"
+      placeholder: "Optional: any extra context to help understand the change..."
+    validations:
+      required: false

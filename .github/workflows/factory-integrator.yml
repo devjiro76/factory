@@ -48,11 +48,33 @@ jobs:
           npm install -g @anthropic-ai/claude-code
           pip install pyyaml
 
-      - name: Read target repo from spec
+      - name: Read target repo and parent issue from spec
         id: target
         run: |
           TARGET_REPO=$(grep 'repo:' ${{ inputs.spec }} | head -1 | awk '{print $2}')
           echo "repo=${TARGET_REPO}" >> "$GITHUB_OUTPUT"
+
+          # Read parent issue from progress file
+          SERVICE=$(python3 -c "
+          import yaml
+          with open('${{ inputs.spec }}') as f:
+              spec = yaml.safe_load(f)
+          print(spec['service']['name'])
+          ")
+          echo "service=${SERVICE}" >> "$GITHUB_OUTPUT"
+
+          PROGRESS_FILE="progress/${SERVICE}.progress.yaml"
+          if [ -f "$PROGRESS_FILE" ]; then
+            PARENT_ISSUE=$(python3 -c "
+          import yaml
+          with open('${PROGRESS_FILE}') as f:
+              p = yaml.safe_load(f)
+          print(p.get('parentIssue', ''))
+          " 2>/dev/null || echo "")
+            echo "parent_issue=${PARENT_ISSUE}" >> "$GITHUB_OUTPUT"
+          else
+            echo "parent_issue=" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Clone target repo
         env:
@@ -105,6 +127,7 @@ jobs:
         run: |
           PHASE="${{ inputs.phase }}"
           SPEC="${{ inputs.spec }}"
+          PARENT_ISSUE="${{ steps.target.outputs.parent_issue }}"
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
           gh label create "factory:blocked" --color D93F0B --force 2>/dev/null || true
@@ -132,6 +155,14 @@ jobs:
 
           ---
           *This issue was auto-created by the Factory pipeline.*"
+
+          # Notify parent issue
+          if [ -n "$PARENT_ISSUE" ]; then
+            gh issue comment "$PARENT_ISSUE" \
+              --body "<!-- factory:bot -->
+          Integration failed for phase **${PHASE}**. See [run log](${RUN_URL}).
+          Recovery options available — check the blocked issue for details." 2>/dev/null || true
+          fi
 
       - name: Merge integration PR & close worker PRs
         if: success()
@@ -176,12 +207,8 @@ jobs:
         run: |
           PHASE="${{ inputs.phase }}"
           SPEC="${{ inputs.spec }}"
-          SERVICE=$(python3 -c "
-          import yaml
-          with open('${SPEC}') as f:
-              spec = yaml.safe_load(f)
-          print(spec['service']['name'])
-          ")
+          SERVICE="${{ steps.target.outputs.service }}"
+          PARENT_ISSUE="${{ steps.target.outputs.parent_issue }}"
           echo "Service: ${SERVICE}, Phase: ${PHASE}"
 
           PROGRESS_FILE="progress/${SERVICE}.progress.yaml"
@@ -224,6 +251,13 @@ jobs:
           git commit -m "chore(factory): mark ${PHASE} phase completed" || echo "No changes to commit"
           git push || echo "Push failed, may need rebase"
 
+          # Notify parent issue about phase completion
+          if [ -n "$PARENT_ISSUE" ]; then
+            gh issue comment "$PARENT_ISSUE" \
+              --body "<!-- factory:bot -->
+          Phase **${PHASE}** completed and merged into main." 2>/dev/null || true
+          fi
+
           # Determine next phase
           NEXT_PHASE=$(python3 -c "
           import yaml
@@ -250,12 +284,64 @@ jobs:
           ")
 
           if [ -n "$NEXT_PHASE" ]; then
-            echo "=== Triggering Lead for next phase: ${NEXT_PHASE} ==="
-            gh workflow run factory-lead.yml \
-              --field spec="$SPEC" \
-              --field phase="$NEXT_PHASE"
+            echo "=== Triggering Approve for next phase: ${NEXT_PHASE} ==="
+
+            # Re-trigger approve workflow by re-using lead logic inline
+            # Since factory-lead.yml is removed, we dispatch directly
+            claude -p "You are the Factory Lead Agent. Your task:
+
+            1. Read the service spec at '${SPEC}'
+            2. Read the progress YAML at '${PROGRESS_FILE}'
+            3. Focus on phase: ${NEXT_PHASE}
+
+            4. For each task in the phase, create a GitHub Issue IN THIS REPO with label 'factory:worker-task'
+               Use 'gh label create factory:worker-task --color FF6B35 --force' first.
+
+               Each issue body MUST follow this format:
+               ---
+               ## Factory Worker Task: <task-id>
+
+               **Target Repo:** ${{ steps.target.outputs.repo }}
+               **Phase:** ${NEXT_PHASE}
+               **Spec:** ${SPEC}
+               **Branch:** factory/<task-id>
+               **Parent Issue:** #${PARENT_ISSUE}
+               **Task Type:** <CREATE or MODIFY>
+
+               ### File Ownership
+               <list of files>
+
+               ### Requirements
+               <requirements from spec>
+
+               ### Reference
+               Read factory/CLAUDE.md for SDK patterns and tech stack requirements.
+
+               ---
+               *This is a factory-generated task.*
+               ---
+
+            5. Update progress YAML: set phase status to 'in_progress', each task to 'dispatched' with issue number
+            6. Commit and push the progress update
+            7. Post a summary comment on parent issue #${PARENT_ISSUE}" \
+              --output-format text \
+              --max-turns 25 \
+              --dangerously-skip-permissions || echo "::warning::Next phase dispatch failed"
           else
-            echo "=== All phases completed! Triggering final deploy. ==="
+            echo "=== All phases completed! ==="
+
+            # Mark parent issue as completed
+            if [ -n "$PARENT_ISSUE" ]; then
+              gh label create "factory:completed" --color 0E8A16 --force 2>/dev/null || true
+              gh issue edit "$PARENT_ISSUE" --remove-label "factory:executing" 2>/dev/null || true
+              gh issue edit "$PARENT_ISSUE" --add-label "factory:completed"
+              gh issue comment "$PARENT_ISSUE" \
+                --body "<!-- factory:bot -->
+          All phases completed! The service has been built and deployed.
+
+          Check the progress file for deploy URL and final status." 2>/dev/null || true
+              gh issue close "$PARENT_ISSUE" 2>/dev/null || true
+            fi
           fi
 
       - name: Deploy to hosting platform
@@ -266,6 +352,7 @@ jobs:
         run: |
           SPEC="${{ inputs.spec }}"
           TARGET_REPO="${{ steps.target.outputs.repo }}"
+          PARENT_ISSUE="${{ steps.target.outputs.parent_issue }}"
 
           # Determine deploy platform from spec
           PLATFORM=$(python3 -c "
@@ -337,12 +424,7 @@ jobs:
 
             # Update progress with deploy URL
             cd "${{ github.workspace }}"
-            SERVICE=$(python3 -c "
-            import yaml
-            with open('${SPEC}') as f:
-                spec = yaml.safe_load(f)
-            print(spec['service']['name'])
-            ")
+            SERVICE="${{ steps.target.outputs.service }}"
             PROGRESS_FILE="progress/${SERVICE}.progress.yaml"
 
             python3 -c "
@@ -360,4 +442,11 @@ jobs:
             git add "$PROGRESS_FILE"
             git commit -m "chore(factory): update deploy URL — ${DEPLOY_URL}" || true
             git push || true
+
+            # Notify parent issue about deployment
+            if [ -n "$PARENT_ISSUE" ]; then
+              gh issue comment "$PARENT_ISSUE" \
+                --body "<!-- factory:bot -->
+          Deployed to ${PLATFORM}: ${DEPLOY_URL}" 2>/dev/null || true
+            fi
           fi
