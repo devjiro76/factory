@@ -449,17 +449,19 @@ jobs:
                 exit 0
               fi
 
-              # Copy vercel.json if not present
-              if [ ! -f vercel.json ]; then
-                cp "${{ github.workspace }}/templates/deploy/vercel/vercel.json" .
-                git add vercel.json
-                git commit -m "chore: add vercel.json for deployment" || true
-                git push origin main || true
+              # Build on GitHub Actions (has PAT for private packages)
+              npm install 2>&1 || true
+              npm run build 2>&1 || true
+
+              if [ ! -d "dist" ]; then
+                echo "::warning::No dist/ directory after build. Skipping deploy."
+                exit 0
               fi
 
+              # Deploy pre-built dist/ to Vercel (no build on Vercel)
               npm install -g vercel 2>/dev/null || true
-              DEPLOY_OUTPUT=$(vercel --prod --yes --token "$VERCEL_TOKEN" 2>&1) || true
-              DEPLOY_URL=$(echo "$DEPLOY_OUTPUT" | grep -oE 'https://[^ ]+' | tail -1)
+              DEPLOY_OUTPUT=$(vercel deploy dist --prod --yes --token "$VERCEL_TOKEN" 2>&1) || true
+              DEPLOY_URL=$(echo "$DEPLOY_OUTPUT" | grep -oE 'https://[^ ]+\.vercel\.app' | tail -1)
               echo "Deploy output: $DEPLOY_OUTPUT"
               ;;
 
