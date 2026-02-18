@@ -65,20 +65,27 @@ jobs:
             echo "action=converse" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Handle APPROVE
+      - name: Handle APPROVE — react and comment
         if: steps.check.outputs.action == 'approve'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           ISSUE_NUM=${{ github.event.issue.number }}
-          # React with rocket to APPROVE comment
           gh api repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions \
             -f content=rocket --silent
-          gh issue edit "$ISSUE_NUM" --remove-label "factory:ready"
-          gh issue edit "$ISSUE_NUM" --add-label "factory:approved"
           gh issue comment "$ISSUE_NUM" \
             --body "<!-- factory:bot -->
           Approved! Starting the Factory pipeline now. I'll update this issue with progress."
+
+      - name: Handle APPROVE — trigger approve workflow
+        if: steps.check.outputs.action == 'approve'
+        env:
+          GH_TOKEN: ${{ secrets.FACTORY_GH_PAT }}
+        run: |
+          ISSUE_NUM=${{ github.event.issue.number }}
+          gh issue edit "$ISSUE_NUM" --remove-label "factory:ready" 2>/dev/null || true
+          gh issue edit "$ISSUE_NUM" --remove-label "factory:refining" 2>/dev/null || true
+          gh issue edit "$ISSUE_NUM" --add-label "factory:approved"
 
       - name: Collect conversation history
         if: steps.check.outputs.action == 'converse'
