@@ -92,6 +92,9 @@ service:
   description: <improvement description>
   type: improvement
 
+stack:
+  deploy: <vercel|cloudflare-pages|github-pages|none>
+
 changes:
   - file: <path>
     action: modify|create|delete
@@ -106,6 +109,11 @@ phases:
         action: MODIFY|CREATE
         files: [<file list>]
 ```
+
+## Deploy Platform
+
+Always include `stack.deploy` in the spec. If the user doesn't mention it, ask or default to `vercel`.
+Valid options: `vercel`, `cloudflare-pages`, `github-pages`, `none`.
 
 ## When Asking Follow-up Questions
 
