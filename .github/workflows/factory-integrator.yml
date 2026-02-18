@@ -262,7 +262,7 @@ jobs:
             PR_STATE=$(gh pr view "$PR_NUM" --repo "$TARGET_REPO" --json state -q .state 2>/dev/null || echo "UNKNOWN")
             if [ "$PR_STATE" = "OPEN" ]; then
               gh pr close "$PR_NUM" --repo "$TARGET_REPO" --delete-branch \
-                --comment "[factory:integrator] Superseded by integration PR #${INTEGRATION_PR}. Changes included in phase '${PHASE}' merge."
+                --comment "[factory:integrator] Superseded by integration PR #${INTEGRATION_PR}. Changes included in phase '${PHASE}' merge." 2>/dev/null || true
               echo "Closed worker PR #${PR_NUM}"
             else
               echo "Worker PR #${PR_NUM} already ${PR_STATE}, skipping."
