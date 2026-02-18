@@ -458,11 +458,36 @@ jobs:
                 exit 0
               fi
 
-              # Deploy pre-built dist/ to Vercel (no build on Vercel)
+              # Prepare pre-built static deploy directory
+              DEPLOY_DIR="/tmp/vercel-deploy"
+              rm -rf "$DEPLOY_DIR"
+              mkdir -p "$DEPLOY_DIR"
+              cp -r dist/* "$DEPLOY_DIR/"
+
+              # vercel.json that skips build (already built)
+              cat > "$DEPLOY_DIR/vercel.json" << 'VJSON'
+          {
+            "buildCommand": "",
+            "outputDirectory": "."
+          }
+          VJSON
+
+              # Determine Vercel project name from spec service name
+              SERVICE_NAME="${{ steps.target.outputs.service }}"
+              VERCEL_PROJECT="${SERVICE_NAME}-deploy"
+
               npm install -g vercel 2>/dev/null || true
-              DEPLOY_OUTPUT=$(vercel deploy dist --prod --yes --token "$VERCEL_TOKEN" 2>&1) || true
+              cd "$DEPLOY_DIR"
+
+              # Link to existing project (or create new one)
+              vercel link --yes --token "$VERCEL_TOKEN" --project "$VERCEL_PROJECT" 2>&1 || true
+
+              # Deploy pre-built static files (no build on Vercel)
+              DEPLOY_OUTPUT=$(vercel deploy --prod --yes --token "$VERCEL_TOKEN" 2>&1) || true
               DEPLOY_URL=$(echo "$DEPLOY_OUTPUT" | grep -oE 'https://[^ ]+\.vercel\.app' | tail -1)
               echo "Deploy output: $DEPLOY_OUTPUT"
+
+              cd /tmp/target-repo
               ;;
 
             cloudflare-pages)
