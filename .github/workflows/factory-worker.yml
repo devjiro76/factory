@@ -108,10 +108,26 @@ jobs:
             fi
           fi
 
-      - name: Copy factory CLAUDE.md to target repo
+      - name: Copy factory context to target repo
         run: |
           # Make factory SDK patterns available in the target repo working directory
           cp ${{ github.workspace }}/CLAUDE.md /tmp/target-repo/.factory-claude.md
+
+          # Extract service name from issue body to locate PRD/OpenSpec
+          SPEC_PATH=$(grep -iP '\*\*Spec\*?\*?:' /tmp/issue-body.txt | head -1 | sed 's/.*[*:]\s*//' | awk '{print $1}' | tr -d '`*')
+          if [ -n "$SPEC_PATH" ]; then
+            SERVICE_NAME=$(basename "$SPEC_PATH" .spec.yaml)
+            # Copy PRD if exists
+            if [ -f "${{ github.workspace }}/specs/${SERVICE_NAME}.prd.md" ]; then
+              cp "${{ github.workspace }}/specs/${SERVICE_NAME}.prd.md" /tmp/target-repo/.factory-prd.md
+              echo "Copied PRD to target repo"
+            fi
+            # Copy OpenSpec if exists
+            if [ -f "${{ github.workspace }}/specs/${SERVICE_NAME}.openspec.md" ]; then
+              cp "${{ github.workspace }}/specs/${SERVICE_NAME}.openspec.md" /tmp/target-repo/.factory-openspec.md
+              echo "Copied OpenSpec to target repo"
+            fi
+          fi
 
       - name: Analyze existing code (MODIFY tasks)
         if: steps.issue.outputs.task_type == 'MODIFY'
@@ -134,6 +150,23 @@ jobs:
           FACTORY_INSTRUCTIONS=$(cat /tmp/target-repo/.factory-claude.md)
           TASK_TYPE="${{ steps.issue.outputs.task_type }}"
           EXISTING_CODE="${EXISTING_FILES:-}"
+
+          # Load PRD and OpenSpec if available
+          PRD_CONTEXT=""
+          if [ -f /tmp/target-repo/.factory-prd.md ]; then
+            PRD_CONTEXT="
+
+          ## Product Requirements (PRD)
+          $(cat /tmp/target-repo/.factory-prd.md)"
+          fi
+
+          OPENSPEC_CONTEXT=""
+          if [ -f /tmp/target-repo/.factory-openspec.md ]; then
+            OPENSPEC_CONTEXT="
+
+          ## Technical Specification (OpenSpec)
+          $(cat /tmp/target-repo/.factory-openspec.md)"
+          fi
 
           cd /tmp/target-repo
 
@@ -168,6 +201,8 @@ jobs:
 
           Factory SDK patterns and conventions:
           ${FACTORY_INSTRUCTIONS}
+          ${PRD_CONTEXT}
+          ${OPENSPEC_CONTEXT}
           ${MODIFY_INSTRUCTIONS}
 
           Instructions:

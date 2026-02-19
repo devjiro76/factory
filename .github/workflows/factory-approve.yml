@@ -37,51 +37,108 @@ jobs:
           npm install -g @anthropic-ai/claude-code
           pip install pyyaml
 
-      - name: Extract spec from conversation
+      - name: Extract documents from conversation
         id: extract
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           ISSUE_NUM=${{ github.event.issue.number }}
 
-          COMMENTS=$(gh issue view "$ISSUE_NUM" --json comments -q '.comments[].body')
+          # Save comments to file to avoid shell escaping issues
+          gh issue view "$ISSUE_NUM" --json comments -q '.comments[].body' > /tmp/comments-raw.txt
 
-          SPEC_YAML=$(echo "$COMMENTS" | python3 -c "
+          # Write extraction script to file
+          cat > /tmp/extract-docs.py << 'PYEOF'
           import sys, re
 
-          content = sys.stdin.read()
+          with open('/tmp/comments-raw.txt', 'r') as f:
+              content = f.read()
 
+          # --- Extract PRD ---
+          prd = ''
+          parts = content.split('<!-- factory:prd -->')
+          if len(parts) >= 2:
+              after = parts[-1]
+              end_markers = ['<!-- factory:openspec -->', '<!-- factory:spec -->', '<!-- factory:bot -->']
+              end_pos = len(after)
+              for marker in end_markers:
+                  pos = after.find(marker)
+                  if pos != -1 and pos < end_pos:
+                      end_pos = pos
+              prd = after[:end_pos].strip()
+              prd = re.sub(r'^```markdown\n', '', prd)
+              prd = re.sub(r'\n```$', '', prd.rstrip())
+
+          # --- Extract OpenSpec ---
+          openspec = ''
+          parts = content.split('<!-- factory:openspec -->')
+          if len(parts) >= 2:
+              after = parts[-1]
+              end_markers = ['<!-- factory:spec -->', '<!-- factory:bot -->']
+              end_pos = len(after)
+              for marker in end_markers:
+                  pos = after.find(marker)
+                  if pos != -1 and pos < end_pos:
+                      end_pos = pos
+              openspec = after[:end_pos].strip()
+              openspec = re.sub(r'^```markdown\n', '', openspec)
+              openspec = re.sub(r'\n```$', '', openspec.rstrip())
+
+          # --- Extract Spec YAML ---
+          spec_yaml = ''
           parts = content.split('<!-- factory:spec -->')
-          if len(parts) < 2:
-              blocks = re.findall(r'\`\`\`ya?ml\n(.*?)\`\`\`', content, re.DOTALL)
+          if len(parts) >= 2:
+              after = parts[-1]
+              match = re.search(r'```ya?ml\n(.*?)```', after, re.DOTALL)
+              if match:
+                  spec_yaml = match.group(1)
+              else:
+                  lines = after.strip().split('\n')
+                  yaml_lines = []
+                  for line in lines:
+                      if line.strip().startswith('service:') or yaml_lines:
+                          yaml_lines.append(line)
+                  if yaml_lines:
+                      spec_yaml = '\n'.join(yaml_lines)
+          else:
+              blocks = re.findall(r'```ya?ml\n(.*?)```', content, re.DOTALL)
               if blocks:
                   for block in reversed(blocks):
                       if 'service:' in block and 'phases:' in block:
-                          print(block)
+                          spec_yaml = block
                           break
-              sys.exit(0)
 
-          after_marker = parts[-1]
-          match = re.search(r'\`\`\`ya?ml\n(.*?)\`\`\`', after_marker, re.DOTALL)
-          if match:
-              print(match.group(1))
+          # Write outputs
+          if prd:
+              with open('/tmp/prd.md', 'w') as f:
+                  f.write(prd)
+              print('PRD extracted: ' + str(len(prd)) + ' chars')
+
+          if openspec:
+              with open('/tmp/openspec.md', 'w') as f:
+                  f.write(openspec)
+              print('OpenSpec extracted: ' + str(len(openspec)) + ' chars')
+
+          if spec_yaml:
+              with open('/tmp/spec.yaml', 'w') as f:
+                  f.write(spec_yaml)
+              print('Spec YAML extracted: ' + str(len(spec_yaml)) + ' chars')
           else:
-              lines = after_marker.strip().split('\n')
-              yaml_lines = []
-              for line in lines:
-                  if line.strip().startswith('service:') or yaml_lines:
-                      yaml_lines.append(line)
-              if yaml_lines:
-                  print('\n'.join(yaml_lines))
-          " 2>/dev/null || echo "")
+              print('ERROR: No spec YAML found')
+              sys.exit(1)
+          PYEOF
 
-          if [ -z "$SPEC_YAML" ]; then
+          python3 /tmp/extract-docs.py
+          EXTRACT_EXIT=$?
+          if [ $EXTRACT_EXIT -ne 0 ]; then
             echo "::error::Could not extract spec YAML from conversation"
             gh issue comment "$ISSUE_NUM" \
               --body "<!-- factory:bot -->
           Could not find a valid spec YAML in the conversation. Please ensure the spec was generated with the \`<!-- factory:spec -->\` marker."
             exit 1
           fi
+
+          SPEC_YAML=$(cat /tmp/spec.yaml)
 
           SERVICE_NAME=$(echo "$SPEC_YAML" | python3 -c "
           import sys, yaml
@@ -97,12 +154,29 @@ jobs:
           echo "service_name=${SERVICE_NAME}" >> "$GITHUB_OUTPUT"
           echo "service_type=${SERVICE_TYPE}" >> "$GITHUB_OUTPUT"
 
+          # Save spec YAML
           SPEC_PATH="specs/${SERVICE_NAME}.spec.yaml"
           mkdir -p specs
-          echo "$SPEC_YAML" > "$SPEC_PATH"
+          cp /tmp/spec.yaml "$SPEC_PATH"
           echo "spec_path=${SPEC_PATH}" >> "$GITHUB_OUTPUT"
 
-          echo "Extracted spec for ${SERVICE_NAME} (type: ${SERVICE_TYPE})"
+          # Save PRD if extracted
+          if [ -f /tmp/prd.md ]; then
+            PRD_PATH="specs/${SERVICE_NAME}.prd.md"
+            cp /tmp/prd.md "$PRD_PATH"
+            echo "prd_path=${PRD_PATH}" >> "$GITHUB_OUTPUT"
+            echo "Saved PRD to ${PRD_PATH}"
+          fi
+
+          # Save OpenSpec if extracted
+          if [ -f /tmp/openspec.md ]; then
+            OPENSPEC_PATH="specs/${SERVICE_NAME}.openspec.md"
+            cp /tmp/openspec.md "$OPENSPEC_PATH"
+            echo "openspec_path=${OPENSPEC_PATH}" >> "$GITHUB_OUTPUT"
+            echo "Saved OpenSpec to ${OPENSPEC_PATH}"
+          fi
+
+          echo "Extracted documents for ${SERVICE_NAME} (type: ${SERVICE_TYPE})"
 
       - name: Create/update progress file
         id: progress

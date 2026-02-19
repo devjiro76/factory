@@ -36,13 +36,27 @@ Issue Created ──> Triage Bot ──> Conversation (refine spec)
 
 1. **Issue created** → `factory:triage` label (via template)
 2. **Triage** (`factory-triage.yml`) → Bot analyzes, asks questions → `factory:refining`
-3. **Conversation** (`factory-converse.yml`) → Bot refines spec via dialogue → generates YAML → `factory:ready`
+3. **Conversation** (`factory-converse.yml`) → Bot refines spec via dialogue → generates **PRD + OpenSpec + Spec YAML** → `factory:ready`
    - Also triggered by `@factory` mentions in any issue comment
 4. **Approve** → Human comments "APPROVE" → `factory:approved` → `factory-approve.yml`
-5. **Execute** → Spec extracted, progress checklist posted, workers dispatched → `factory:executing`
-6. **Workers** (`factory-worker.yml`) → Implement tasks, create PRs in target repo
+5. **Execute** → Documents extracted & saved, progress checklist posted, workers dispatched → `factory:executing`
+6. **Workers** (`factory-worker.yml`) → Implement tasks (with PRD/OpenSpec context), create PRs in target repo
 7. **Integrator** (`factory-integrator.yml`) → Merge PRs, deploy, update progress checklist, trigger next phase
 8. **Complete** → All phases done → `factory:completed`, parent issue closed
+
+### Planning Documents (3-Document System)
+
+The conversation phase produces three documents that flow through the pipeline:
+
+| Document | File | Marker | Purpose |
+|----------|------|--------|---------|
+| **PRD** | `specs/{service}.prd.md` | `<!-- factory:prd -->` | What to build, who it's for, success criteria |
+| **OpenSpec** | `specs/{service}.openspec.md` | `<!-- factory:openspec -->` | How to build it — requirements, architecture, UI specs |
+| **Spec YAML** | `specs/{service}.spec.yaml` | `<!-- factory:spec -->` | Machine-readable execution plan for workers |
+
+**Document flow**: PRD (product vision) → OpenSpec (technical requirements) → Spec YAML (task breakdown)
+
+**Consistency rule**: Every must-have feature in the PRD must have a corresponding functional requirement in the OpenSpec and tasks in the Spec YAML.
 
 ### Anti-Loop Strategy (5-Layer)
 
@@ -139,8 +153,8 @@ Transition: `triage -> refining <-> (conversation) -> ready -> approved -> execu
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
 | `factory-triage.yml` | `issues: [opened]` + `factory:triage` | Analyze issue, ask initial questions |
-| `factory-converse.yml` | `issue_comment: [created]` + anti-loop / `@factory` | Continue conversation, detect APPROVE |
-| `factory-approve.yml` | `issues: [labeled]` + `factory:approved` | Extract spec, post progress checklist, dispatch workers |
+| `factory-converse.yml` | `issue_comment: [created]` + anti-loop / `@factory` | Continue conversation, generate PRD + OpenSpec + Spec YAML |
+| `factory-approve.yml` | `issues: [labeled]` + `factory:approved` | Extract documents, post progress checklist, dispatch workers |
 | `factory-worker.yml` | `issues: [labeled]` + `factory:worker-task` or `factory:retry` | Implement task, create PR |
 | `factory-integrator.yml` | `workflow_dispatch` | Merge PRs, deploy, trigger next phase |
 | `factory-recover.yml` | `workflow_dispatch` | Recovery: retry-phase, retry-integration, skip-phase |
@@ -218,7 +232,7 @@ gh workflow run factory-recover.yml -f spec="specs/pet-chatbot.spec.yaml" -f pha
 |----------|---------|
 | `templates/prompts/triage-new.md` | Initial analysis for new service requests |
 | `templates/prompts/triage-improvement.md` | Initial analysis for improvement requests |
-| `templates/prompts/converse.md` | Conversation continuation + spec generation |
+| `templates/prompts/converse.md` | Conversation continuation + PRD/OpenSpec/Spec YAML generation |
 
 ## Deployment
 
